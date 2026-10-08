@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Activity as ActivityIcon,
-  ArrowDown,
   ArrowLeft,
   ArrowUp,
   ArrowUpRight,
+  ArrowRightLeft,
   Bot,
   Check,
   ChevronDown,
@@ -18,6 +18,11 @@ import {
   KeyRound,
   LoaderCircle,
   MoreHorizontal,
+  MessageSquare,
+  Pencil,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRight,
   Plus,
   Search,
   Server as ServerIcon,
@@ -40,18 +45,39 @@ import type {
   Server,
   ServerInput,
   Settings,
+  Session,
+  SessionMessage,
+  Project,
+  PermissionPolicy,
 } from "../shared/types";
 import TerminalPane from "./TerminalPane";
+import WorkspaceSwitcher from "./WorkspaceSwitcher";
+import SelectMenu from "./SelectMenu";
+import ThemeSettings from "./ThemeSettings";
+import AgentOptionsPicker from "./AgentOptionsPicker";
+import HandoffPanel from "./HandoffPanel";
+import ProjectSidebar from "./ProjectSidebar";
+import ProjectModal from "./ProjectModal";
 import { forgetTerminal, startTerminalHub } from "./terminalHub";
 import { isPreview } from "./preview";
+import { version } from "../../package.json";
+import {
+  loadWorkspaces,
+  newWorkspace,
+  workspaceStorageKey,
+  type Workspace,
+} from "./workspaces";
 
-type Tab = { id: string; title: string; serverId?: string; closed?: boolean };
-type Message = {
+type Tab = {
   id: string;
-  role: "user" | "assistant";
-  text: string;
-  result?: AgentResult;
+  title: string;
+  workspaceId: string;
   serverId?: string;
+  closed?: boolean;
+};
+type Message = SessionMessage & {
+  workspaceId: string;
+  sessionId: string;
 };
 function errorText(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replace(
@@ -60,39 +86,258 @@ function errorText(error: unknown) {
   );
 }
 export default function App() {
-  const [servers, setServers] = useState<Server[]>([]),
-    [selected, setSelected] = useState<string>();
-  const [query, setQuery] = useState(""),
-    [view, setView] = useState<"workspace" | "activity">("workspace");
-  const [modal, setModal] = useState<"server" | "settings" | null>(null),
+  const [workspaceState, setWorkspaceState] = useState(loadWorkspaces);
+  const workspace = workspaceState.workspaces.find(
+    (w) => w.id === workspaceState.activeId,
+  )!;
+  function updateWorkspace(patch: Partial<Workspace>, id = workspace.id) {
+    setWorkspaceState((current) => ({
+      ...current,
+      workspaces: current.workspaces.map((w) =>
+        w.id === id ? { ...w, ...patch } : w,
+      ),
+    }));
+  }
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [editingProject, setEditingProject] = useState<Project>();
+  const workspaceProjects = projects.filter(
+    (p) => p.workspaceId === workspace.id,
+  );
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const workspaceSessions = sessions
+    .filter((s) => s.workspaceId === workspace.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const session =
+    workspaceSessions.find((s) => s.id === workspace.activeSessionId) ??
+    workspaceSessions[0];
+  const currentProject = workspaceProjects.find(
+    (p) => p.id === session?.projectId,
+  );
+  const permissions = session?.permissions ?? "ask";
+  const { selected, view, engine, terminalOpen, agentOpen } = workspace;
+  const setSelected = (selected?: string) => {
+    if (
+      currentProject &&
+      selected &&
+      !currentProject.serverIds.includes(selected)
+    ) {
+      report(new Error("请选择项目关联的服务器"));
+      return;
+    }
+    if (session)
+      void window.axon.sessions
+        .update(session.id, { serverId: selected ?? null })
+        .then((next) => {
+          mergeSession(next);
+          updateWorkspace({ selected });
+        })
+        .catch(report);
+  };
+  const setView = (view: Workspace["view"]) => updateWorkspace({ view });
+  const setEngine = (engine: Engine) => {
+    updateWorkspace({ engine });
+    if (session)
+      void window.axon.sessions
+        .update(session.id, { engine })
+        .then(mergeSession)
+        .catch(report);
+  };
+  const [servers, setServers] = useState<Server[]>([]);
+  const [query, setQuery] = useState("");
+  const [modal, setModal] = useState<
+      "server" | "settings" | "workspace" | "project" | null
+    >(null),
     [editing, setEditing] = useState<Server>();
-  const [tabs, setTabs] = useState<Tab[]>([]),
-    [activeTab, setActiveTab] = useState<string>();
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabs, setActiveTabs] = useState<
+    Record<string, string | undefined>
+  >({});
+  const workspaceTabs = tabs.filter((t) => t.workspaceId === workspace.id);
+  const activeTab = activeTabs[workspace.id];
+  const setActiveTab = (id?: string, workspaceId = workspace.id) =>
+    setActiveTabs((current) => ({ ...current, [workspaceId]: id }));
   const [connected, setConnected] = useState<Set<string>>(new Set()),
     [connecting, setConnecting] = useState<string>();
-  const [messages, setMessages] = useState<Message[]>([]),
-    [input, setInput] = useState(""),
-    [engine, setEngine] = useState<Engine>("builtin");
-  const [taskId, setTaskId] = useState<string>(),
-    [cli, setCli] = useState<CliInfo[]>([]);
+  const [allMessages, setMessages] = useState<Message[]>([]);
+  const messages = allMessages.filter((m) => m.sessionId === session?.id);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const sessionKey = session?.id ?? workspace.id;
+  const input = drafts[sessionKey] ?? "";
+  const setInput = (input: string) =>
+    setDrafts((current) => ({ ...current, [sessionKey]: input }));
+  const [tasks, setTasks] = useState<Record<string, string | undefined>>({});
+  const taskId = tasks[sessionKey];
+  const setTaskId = (id?: string) =>
+    setTasks((current) => ({ ...current, [sessionKey]: id }));
+  const [cli, setCli] = useState<CliInfo[]>([]);
   const [error, setError] = useState(""),
-    [activity, setActivity] = useState<Activity[]>([]);
+    [allActivity, setActivity] = useState<Activity[]>([]);
+  const activity = allActivity.filter((a) => a.sessionId === session?.id);
   const [files, setFiles] = useState<FileEntry[]>([]),
     [filePath, setFilePath] = useState("."),
     [showFiles, setShowFiles] = useState(false);
-  const [terminalSearch, setTerminalSearch] = useState(""),
-    [terminalLarge, setTerminalLarge] = useState(false);
+  const [terminalSearch, setTerminalSearch] = useState("");
   const [busyCommand, setBusyCommand] = useState<string>(),
     [results, setResults] = useState<Record<string, CommandResult>>({});
   const scrollEnd = useRef<HTMLDivElement>(null);
-  const tabsRef = useRef(tabs);
-  tabsRef.current = tabs;
   const selectedServer = servers.find((s) => s.id === selected);
   const report = (e: unknown) => setError(errorText(e));
   const reload = async () => setServers(await window.axon.servers.list());
+  function mergeSession(next: Session) {
+    setSessions((current) => [
+      ...current.filter((s) => s.id !== next.id),
+      next,
+    ]);
+    setMessages((current) => {
+      const ids = new Set(next.messages.map((m) => m.id));
+      return [
+        ...current.filter((m) => !ids.has(m.id)),
+        ...next.messages.map((m) => ({
+          ...m,
+          workspaceId: next.workspaceId,
+          sessionId: next.id,
+          text:
+            m.status === "running"
+              ? (current.find((old) => old.id === m.id)?.text ?? m.text)
+              : m.text,
+        })),
+      ];
+    });
+  }
+  async function reloadSessions() {
+    setProjects(await window.axon.projects.list());
+    const values = await window.axon.sessions.list(
+      workspaceState.workspaces[0].id,
+    );
+    values.forEach(mergeSession);
+    setSessionsLoaded(true);
+  }
+  function selectSession(next: Session) {
+    const project = projects.find((p) => p.id === next.projectId);
+    if (
+      project &&
+      next.serverId &&
+      !project.serverIds.includes(next.serverId)
+    ) {
+      void window.axon.sessions
+        .update(next.id, { projectId: project.id })
+        .then((updated) => {
+          mergeSession(updated);
+          applySession(updated);
+        })
+        .catch(report);
+      return;
+    }
+    applySession(next);
+  }
+  function applySession(next: Session) {
+    setModal(null);
+    updateWorkspace({
+      activeSessionId: next.id,
+      selected: next.serverId,
+      engine: next.engine,
+      view: view === "activity" || view === "handoff" ? "workspace" : view,
+    });
+    setError("");
+  }
+  async function createSession(
+    projectId?: string | null,
+    knownProject?: Project,
+  ) {
+    try {
+      const id =
+        projectId === null ? undefined : (projectId ?? session?.projectId);
+      const project = knownProject ?? projects.find((p) => p.id === id);
+      const serverId = undefined;
+      const next = await window.axon.sessions.create(
+        workspace.id,
+        serverId,
+        engine,
+        id,
+      );
+      mergeSession(next);
+      selectSession(next);
+    } catch (e) {
+      report(e);
+    }
+  }
+  async function sessionContextMenu(target: Session) {
+    try {
+      if ((await window.axon.sessions.contextMenu(target.id)) !== "delete")
+        return;
+      if (!(await window.axon.sessions.remove(target.id))) return;
+      setSessions((current) => current.filter((s) => s.id !== target.id));
+      setMessages((current) =>
+        current.filter((m) => m.sessionId !== target.id),
+      );
+      setActivity((current) =>
+        current.filter((a) => a.sessionId !== target.id),
+      );
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[target.id];
+        return next;
+      });
+    } catch (e) {
+      report(e);
+    }
+  }
+  useEffect(() => {
+    void reloadSessions().catch(report);
+  }, []);
+  useEffect(() => {
+    if (
+      !sessionsLoaded ||
+      (session && workspace.activeSessionId === session.id)
+    )
+      return;
+    if (session) {
+      selectSession(session);
+      return;
+    }
+    let cancelled = false;
+    void window.axon.sessions
+      .ensure(workspace.id)
+      .then((next) => {
+        mergeSession(next);
+        if (!cancelled) selectSession(next);
+      })
+      .catch(report);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionsLoaded, workspace.id, session?.id, workspace.activeSessionId]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(workspaceStorageKey, JSON.stringify(workspaceState));
+    } catch {
+      setError("无法保存工作空间布局，请检查本机存储空间。");
+    }
+  }, [workspaceState]);
+  useEffect(() => {
+    // Existing profiles belong to the original workspace on first upgrade.
+    setWorkspaceState((current) => {
+      const assigned = new Set(current.workspaces.flatMap((w) => w.serverIds));
+      const missing = servers
+        .filter((s) => !assigned.has(s.id))
+        .map((s) => s.id);
+      if (!missing.length) return current;
+      return {
+        ...current,
+        workspaces: current.workspaces.map((w, i) =>
+          i === 0 ? { ...w, serverIds: [...w.serverIds, ...missing] } : w,
+        ),
+      };
+    });
+  }, [servers]);
   useEffect(() => {
     startTerminalHub();
     void reload().catch(report);
+    void window.axon.servers
+      .connected()
+      .then((ids) => setConnected(new Set(ids)))
+      .catch(report);
     void window.axon.agent.detect().then(setCli).catch(report);
     return window.axon.onEvent((event) => {
       if (event.type === "agent:delta")
@@ -101,20 +346,14 @@ export default function App() {
             m.id === event.id ? { ...m, text: m.text + event.data } : m,
           ),
         );
+      if (event.type === "server:status")
+        setConnected((current) => {
+          const next = new Set(current);
+          if (event.connected) next.add(event.id);
+          else next.delete(event.id);
+          return next;
+        });
       if (event.type === "terminal:closed") {
-        const target = tabsRef.current.find((t) => t.id === event.id);
-        if (
-          target?.serverId &&
-          !tabsRef.current.some(
-            (t) =>
-              t.id !== event.id && t.serverId === target.serverId && !t.closed,
-          )
-        )
-          setConnected((previous) => {
-            const next = new Set(previous);
-            next.delete(target.serverId!);
-            return next;
-          });
         setTabs((current) => {
           return current.map((t) =>
             t.id === event.id ? { ...t, closed: true } : t,
@@ -128,7 +367,26 @@ export default function App() {
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.key === "1") {
         event.preventDefault();
+        setModal(null);
         setView("workspace");
+      }
+      if (event.key === "2") {
+        event.preventDefault();
+        setModal(null);
+        setView("terminal");
+      }
+      if (event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setWorkspaceState((current) => ({
+          ...current,
+          sidebarCollapsed: !current.sidebarCollapsed,
+        }));
+      }
+      if (event.key === "`") {
+        event.preventDefault();
+        setModal(null);
+        if (view === "terminal") setView("workspace");
+        else updateWorkspace({ terminalOpen: !terminalOpen });
       }
       if (event.key === ",") {
         event.preventDefault();
@@ -137,25 +395,81 @@ export default function App() {
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, []);
+  }, [workspace.id, view, terminalOpen]);
   useEffect(() => {
     scrollEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [allMessages, session?.id, view, agentOpen]);
   useEffect(() => {
-    setFilePath(".");
+    setFilePath(
+      currentProject && selected
+        ? (currentProject.remoteDirectory ?? ".")
+        : ".",
+    );
     setFiles([]);
     setShowFiles(false);
-  }, [selected]);
+  }, [
+    selected,
+    workspace.id,
+    currentProject?.id,
+    currentProject?.remoteDirectory,
+  ]);
+  useEffect(() => {
+    if (!session) {
+      setActivity([]);
+      return;
+    }
+    let cancelled = false;
+    void window.axon.activity
+      .list(session.id)
+      .then((records) => {
+        if (cancelled) return;
+        setActivity((current) => [
+          ...current.filter((a) => a.sessionId !== session.id),
+          ...records,
+        ]);
+        setResults((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            records
+              .filter((a) => a.proposalKey && a.result)
+              .map((a) => [a.proposalKey!, a.result!]),
+          ),
+        }));
+      })
+      .catch(report);
+    return () => {
+      cancelled = true;
+    };
+  }, [view, session?.id]);
+  async function connectServer(server: Server) {
+    setConnecting(server.id);
+    setError("");
+    try {
+      await window.axon.servers.connect(server.id);
+      setConnected((current) => new Set(current).add(server.id));
+      await reload();
+    } catch (e) {
+      report(e);
+    } finally {
+      setConnecting(undefined);
+    }
+  }
   async function openTerminal(server?: Server) {
     setError("");
     if (server) setConnecting(server.id);
     try {
-      const id = await window.axon.terminal.open(server?.id);
+      const id = await window.axon.terminal.open(server?.id, session?.id);
       setTabs((current) => [
         ...current,
-        { id, title: server?.name ?? "本地终端", serverId: server?.id },
+        {
+          id,
+          title: server?.name ?? "本地终端",
+          serverId: server?.id,
+          workspaceId: workspace.id,
+        },
       ]);
       setActiveTab(id);
+      updateWorkspace({ terminalOpen: true });
       if (server) {
         setSelected(server.id);
         setConnected((current) => new Set(current).add(server.id));
@@ -169,12 +483,21 @@ export default function App() {
   }
   async function launchCli(name: "codex" | "claude") {
     try {
-      const id = await window.axon.terminal.launch(name);
+      const id = await window.axon.terminal.launch(
+        name,
+        session?.agentOptions?.[name],
+        session?.id,
+      );
       setTabs((current) => [
         ...current,
-        { id, title: name === "codex" ? "Codex CLI" : "Claude Code" },
+        {
+          id,
+          title: name === "codex" ? "Codex CLI" : "Claude Code",
+          workspaceId: workspace.id,
+        },
       ]);
       setActiveTab(id);
+      updateWorkspace({ terminalOpen: true });
     } catch (e) {
       report(e);
     }
@@ -185,7 +508,7 @@ export default function App() {
       forgetTerminal(tab.id);
       setTabs((current) => current.filter((t) => t.id !== tab.id));
       if (activeTab === tab.id)
-        setActiveTab(tabs.find((t) => t.id !== tab.id)?.id);
+        setActiveTab(workspaceTabs.find((t) => t.id !== tab.id)?.id);
     } catch (e) {
       report(e);
     }
@@ -205,18 +528,32 @@ export default function App() {
   }
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (!input.trim() || taskId) return;
+    if (!input.trim() || taskId || !session) return;
+    if (selected && !connected.has(selected)) {
+      setError("请先连接选定的服务器");
+      return;
+    }
     const id = crypto.randomUUID(),
-      message = input.trim();
+      message = input.trim(),
+      userMessageId = crypto.randomUUID();
     setMessages((current) => [
       ...current,
       {
-        id: crypto.randomUUID(),
+        id: userMessageId,
+        workspaceId: workspace.id,
+        sessionId: session.id,
         role: "user",
         text: message,
         serverId: selected,
       },
-      { id, role: "assistant", text: "", serverId: selected },
+      {
+        id,
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        role: "assistant",
+        text: "",
+        serverId: selected,
+      },
     ]);
     setInput("");
     setTaskId(id);
@@ -227,6 +564,9 @@ export default function App() {
         engine,
         message,
         serverId: selected,
+        sessionId: session.id,
+        userMessageId,
+        ...session.agentOptions?.[engine],
       });
       setMessages((current) =>
         current.map((m) =>
@@ -239,17 +579,33 @@ export default function App() {
       );
     } finally {
       setTaskId(undefined);
+      void reloadSessions().catch(report);
     }
   }
-  async function execute(serverId: string, command: string, key: string) {
+  async function execute(
+    serverId: string | undefined,
+    command: string,
+    key: string,
+    sessionId: string,
+  ) {
     if (busyCommand) return;
     setBusyCommand(key);
     setError("");
     try {
-      await window.axon.servers.connect(serverId);
-      const approval = await window.axon.remote.propose(serverId, command);
+      if (serverId) await window.axon.servers.connect(serverId);
+      const approval = await window.axon.remote.propose(
+        serverId,
+        command,
+        sessionId,
+        key,
+      );
       const result = await window.axon.remote.execute(approval);
       setResults((current) => ({ ...current, [key]: result }));
+      const records = await window.axon.activity.list(sessionId);
+      setActivity((current) => [
+        ...current.filter((a) => a.sessionId !== sessionId),
+        ...records,
+      ]);
       await reload();
     } catch (e) {
       report(e);
@@ -264,20 +620,26 @@ export default function App() {
       setFiles(await window.axon.remote.files(selected, path));
       setFilePath(path);
       setShowFiles(true);
+      if (view === "terminal") updateWorkspace({ agentOpen: true });
       await reload();
     } catch (e) {
       report(e);
     }
   }
-  async function showActivity() {
+  function showActivity() {
     setView("activity");
-    try {
-      setActivity(await window.axon.activity.list());
-    } catch (e) {
-      report(e);
-    }
   }
-  const visibleServers = servers.filter((s) =>
+  const workspaceServers = servers.filter((s) =>
+    workspace.serverIds.includes(s.id),
+  );
+  const projectServers = currentProject
+    ? workspaceServers.filter(
+        (s) =>
+          workspace.serverIds.includes(s.id) &&
+          (!currentProject || currentProject.serverIds.includes(s.id)),
+      )
+    : workspaceServers;
+  const visibleServers = projectServers.filter((s) =>
     `${s.name} ${s.host} ${s.group}`
       .toLowerCase()
       .includes(query.toLowerCase()),
@@ -285,7 +647,7 @@ export default function App() {
   const groups = [...new Set(visibleServers.map((s) => s.group || "未分组"))];
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className="sidebar" hidden={workspaceState.sidebarCollapsed}>
         <div className="brand">
           <div className="brand-mark">
             <Command size={21} />
@@ -295,37 +657,34 @@ export default function App() {
           </span>
           <span className="version">α</span>
         </div>
-        <button
-          className="workspace-switch"
-          onClick={() => {
-            setView("workspace");
-            setSelected(undefined);
+        <WorkspaceSwitcher
+          workspaces={workspaceState.workspaces}
+          activeId={workspace.id}
+          select={(id) => {
+            setWorkspaceState((current) => ({ ...current, activeId: id }));
+            setQuery("");
+            setError("");
           }}
-        >
-          <div className="workspace-icon">
-            <TerminalIcon size={17} />
-          </div>
-          <span>
-            我的工作空间<small>Local workspace</small>
-          </span>
-          <ChevronDown size={15} />
-        </button>
-        <div className="sidebar-actions">
-          <button
-            className={view === "workspace" ? "nav-item active" : "nav-item"}
-            onClick={() => setView("workspace")}
-          >
-            <Sparkles size={17} />
-            智能工作台<span className="shortcut">⌘ 1</span>
-          </button>
-          <button
-            className={view === "activity" ? "nav-item active" : "nav-item"}
-            onClick={showActivity}
-          >
-            <ActivityIcon size={17} />
-            执行记录<span className="count">{activity.length || "—"}</span>
-          </button>
-        </div>
+          create={() => setModal("workspace")}
+        />
+        <ProjectSidebar
+          projects={workspaceProjects}
+          sessions={workspaceSessions}
+          selectedId={session?.id}
+          tasks={tasks}
+          loaded={sessionsLoaded}
+          select={selectSession}
+          contextMenu={(target) => void sessionContextMenu(target)}
+          create={(projectId) => void createSession(projectId)}
+          addProject={() => {
+            setEditingProject(undefined);
+            setModal("project");
+          }}
+          edit={(project) => {
+            setEditingProject(project);
+            setModal("project");
+          }}
+        />
         <div className="sidebar-heading">
           服务器{" "}
           <button
@@ -368,7 +727,7 @@ export default function App() {
                     className={`server-row ${selected === server.id ? "selected" : ""}`}
                     onClick={() => {
                       setSelected(server.id);
-                      setView("workspace");
+                      if (view === "activity") setView("workspace");
                     }}
                   >
                     <ServerIcon size={16} />
@@ -387,7 +746,7 @@ export default function App() {
                 ))}
             </div>
           ))}
-          {!servers.length && (
+          {!workspaceServers.length && (
             <div className="sidebar-empty">
               <ServerIcon size={24} />
               <p>连接你的第一台服务器</p>
@@ -401,24 +760,26 @@ export default function App() {
               </button>
             </div>
           )}
-          {servers.length > 0 && !visibleServers.length && (
-            <p className="muted sidebar-no-results">没有匹配的服务器</p>
+          {workspaceServers.length > 0 && !visibleServers.length && (
+            <p className="muted sidebar-no-results">
+              {!query && currentProject && !currentProject.serverIds.length
+                ? "此项目尚未关联服务器，可在项目管理中添加关联"
+                : "没有匹配的服务器"}
+            </p>
           )}
         </div>
         <div className="sidebar-bottom">
-          <div className="local-note">
-            <ShieldCheck size={14} />
-            <span>数据保存在本机</span>
-            <i className="status-dot online" />
-          </div>
-          <button className="nav-item" onClick={() => setModal("settings")}>
+          <button
+            className={modal === "settings" ? "nav-item active" : "nav-item"}
+            onClick={() => setModal("settings")}
+          >
             <SettingsIcon size={17} />
             设置与模型
           </button>
           <div className="profile">
             <span className="avatar">A</span>
             <div>
-              个人工作空间<small>AxonSSH · v0.1.0</small>
+              个人工作空间<small>AxonSSH · v{version}</small>
             </div>
             <MoreHorizontal size={17} />
           </div>
@@ -427,20 +788,94 @@ export default function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">
-            <span>工作空间</span>
+            <button
+              className="icon-button"
+              aria-label={
+                workspaceState.sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"
+              }
+              title="切换侧边栏 · Ctrl+B"
+              onClick={() =>
+                setWorkspaceState((current) => ({
+                  ...current,
+                  sidebarCollapsed: !current.sidebarCollapsed,
+                }))
+              }
+            >
+              {workspaceState.sidebarCollapsed ? (
+                <PanelLeftOpen size={18} />
+              ) : (
+                <PanelLeftClose size={18} />
+              )}
+            </button>
+            <span>{workspace.name}</span>
             <ChevronRight size={14} />
             <strong>
-              {view === "activity"
-                ? "执行记录"
-                : (selectedServer?.name ?? "智能工作台")}
+              {modal === "settings"
+                ? "设置与模型"
+                : view === "handoff"
+                  ? "交接记录"
+                  : view === "activity"
+                    ? "执行记录"
+                    : view === "terminal"
+                      ? "终端"
+                      : "智能工作台"}
             </strong>
           </div>
           <div className="topbar-right">
+            <div className="view-switch" aria-label="主视图">
+              <button
+                aria-label="智能工作台主视图"
+                aria-pressed={view !== "terminal"}
+                onClick={() => {
+                  setModal(null);
+                  setView("workspace");
+                }}
+              >
+                <Sparkles size={15} />
+                <span>工作台</span>
+              </button>
+              <button
+                aria-label="终端主视图"
+                aria-pressed={view === "terminal"}
+                onClick={() => {
+                  setModal(null);
+                  setView("terminal");
+                }}
+              >
+                <TerminalIcon size={15} />
+                <span>终端</span>
+              </button>
+            </div>
+            {view === "workspace" && modal !== "settings" && (
+              <>
+                <button
+                  className="icon-button panel-toggle"
+                  aria-label="右侧终端"
+                  title="右侧终端"
+                  aria-pressed={terminalOpen}
+                  onClick={() =>
+                    updateWorkspace({
+                      terminalOpen: !terminalOpen,
+                    })
+                  }
+                >
+                  <PanelRight size={18} />
+                </button>
+              </>
+            )}
+            {view === "terminal" && modal !== "settings" && (
+              <button
+                className="text-button panel-toggle"
+                aria-label="右侧智能体"
+                aria-pressed={agentOpen}
+                onClick={() => updateWorkspace({ agentOpen: !agentOpen })}
+              >
+                <Bot size={16} />
+                智能体
+                <PanelRight size={16} />
+              </button>
+            )}
             {isPreview && <span className="badge warning">浏览器界面预览</span>}
-            <span className="badge">
-              <ShieldCheck size={12} />
-              本地优先
-            </span>
             <button
               className="icon-button"
               aria-label="设置"
@@ -458,18 +893,146 @@ export default function App() {
             </button>
           </div>
         )}
-        {view === "activity" ? (
-          <div className="activity-view">
+        {modal === "settings" && (
+          <SettingsPage
+            close={() => setModal(null)}
+            cli={cli}
+            refreshCli={async () => setCli(await window.axon.agent.detect())}
+            launch={launchCli}
+          />
+        )}
+        {session && (
+          <div className="session-toolbar" hidden={modal === "settings"}>
+            <div className="session-title">
+              <MessageSquare size={15} />
+              <input
+                key={session.id + session.title}
+                aria-label="Session 名称"
+                defaultValue={session.title}
+                maxLength={100}
+                onBlur={(event) => {
+                  const title = event.target.value.trim();
+                  if (!title) {
+                    event.target.value = session.title;
+                    return;
+                  }
+                  if (title !== session.title)
+                    void window.axon.sessions
+                      .update(session.id, { title })
+                      .then(mergeSession)
+                      .catch(report);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") {
+                    event.currentTarget.value = session.title;
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              <Pencil size={12} />
+            </div>
+            <div className="session-project-select">
+              <SelectMenu
+                label="Session 项目"
+                compact
+                value={session.projectId ?? ""}
+                onChange={(projectId) => {
+                  void window.axon.sessions
+                    .update(session.id, { projectId: projectId || null })
+                    .then((next) => {
+                      mergeSession(next);
+                      selectSession(next);
+                    })
+                    .catch(report);
+                }}
+                options={[
+                  { value: "", label: "未归类", description: "不关联项目目录" },
+                  ...workspaceProjects
+                    .filter((p) => !p.archived || p.id === session.projectId)
+                    .map((p) => ({
+                      value: p.id,
+                      label: p.name + (p.archived ? "（已归档）" : ""),
+                      description: `${p.includeLocal ? "本地" : ""}${p.includeLocal && p.serverIds.length ? " + " : ""}${p.serverIds.length ? `${p.serverIds.length} 台服务器` : ""}`,
+                      disabled: p.archived,
+                    })),
+                ]}
+              />
+            </div>
+            {session && (
+              <div className="session-target-select">
+                <SelectMenu
+                  label="处理位置"
+                  disabled={!!taskId || !!busyCommand}
+                  compact
+                  value={selected ?? ""}
+                  onChange={(value) => setSelected(value || undefined)}
+                  options={[
+                    {
+                      value: "",
+                      label: "本机",
+                      description: currentProject?.directory ?? "本机工作环境",
+                    },
+                    ...servers
+                      .filter(
+                        (s) =>
+                          workspace.serverIds.includes(s.id) &&
+                          (!currentProject ||
+                            currentProject.serverIds.includes(s.id)),
+                      )
+                      .map((s) => ({
+                        value: s.id,
+                        label: s.name,
+                        description: `${s.username}@${s.host}:${s.port}`,
+                      })),
+                  ]}
+                />
+              </div>
+            )}
+            <div className="session-navigation">
+              <button
+                aria-pressed={view !== "activity" && view !== "handoff"}
+                onClick={() => {
+                  if (view === "activity" || view === "handoff")
+                    setView("workspace");
+                  else if (view === "terminal")
+                    updateWorkspace({ agentOpen: true });
+                }}
+              >
+                <MessageSquare size={14} />
+                对话
+              </button>
+              <button
+                aria-label="Session 交接记录"
+                aria-pressed={view === "handoff"}
+                onClick={() => setView("handoff")}
+              >
+                <ArrowRightLeft size={14} />
+                交接记录
+              </button>
+              <button
+                aria-label="Session 执行记录"
+                aria-pressed={view === "activity"}
+                onClick={showActivity}
+              >
+                <ActivityIcon size={14} />
+                执行记录{activity.length > 0 && <span>{activity.length}</span>}
+              </button>
+            </div>
+          </div>
+        )}
+        {view === "activity" && (
+          <div className="activity-view" hidden={modal === "settings"}>
             <div className="section-eyebrow">OPERATIONS</div>
-            <h1>执行记录</h1>
+            <h1>{session?.title} · 执行记录</h1>
             <p className="muted">
-              记录经过确认的远程命令，保存在本机。未知退出状态的命令不会自动重试。
+              仅显示当前 Session 的命令记录。未知退出状态的命令不会自动重试。
             </p>
             {!activity.length ? (
               <div className="empty-record">
                 <ActivityIcon size={32} />
-                <h3>还没有执行记录</h3>
-                <p>在工作台执行命令后，记录会显示在这里。</p>
+                <h3>此 Session 还没有执行记录</h3>
+                <p>在此会话中审批执行命令后，记录会显示在这里。</p>
               </div>
             ) : (
               <div className="activity-table">
@@ -484,14 +1047,23 @@ export default function App() {
                       <code>{a.command}</code>
                       <small>
                         {servers.find((s) => s.id === a.serverId)?.name ??
-                          "已删除服务器"}{" "}
+                          (a.kind === "diagnostic" && !a.serverId
+                            ? "本地"
+                            : "已删除服务器")}{" "}
                         · {a.durationMs} ms
+                        {a.approval === "bypassed" && " · Bypass permissions"}
                       </small>
                     </div>
                     <span
                       className={`badge ${a.code === 0 ? "success" : "warning"}`}
                     >
-                      {a.code === null ? "未知" : `exit ${a.code}`}
+                      {a.kind === "diagnostic"
+                        ? a.code === 0
+                          ? "只读采集完成"
+                          : "部分读取失败"
+                        : a.code === null
+                          ? "未知"
+                          : `exit ${a.code}`}
                     </span>
                     <small>{new Date(a.createdAt).toLocaleString()}</small>
                   </div>
@@ -499,7 +1071,31 @@ export default function App() {
               </div>
             )}
           </div>
-        ) : (
+        )}
+        {view === "handoff" && session && modal !== "settings" && (
+          <HandoffPanel
+            session={session}
+            engine={engine}
+            busy={!!taskId}
+            reset={() => {
+              void window.axon.agent
+                .resetNative(
+                  session.id,
+                  engine,
+                  selected,
+                  session.agentOptions?.[engine]?.model,
+                )
+                .then(mergeSession)
+                .catch(report);
+            }}
+          />
+        )}
+        <div
+          className={`workspace-layout view-${view} dock-right ${terminalOpen ? "terminal-open" : ""} ${agentOpen ? "agent-open" : ""}`}
+          hidden={
+            view === "activity" || view === "handoff" || modal === "settings"
+          }
+        >
           <>
             {selectedServer && (
               <div className="server-toolbar">
@@ -513,7 +1109,7 @@ export default function App() {
                   <span
                     className={`badge ${connected.has(selectedServer.id) ? "success" : ""}`}
                   >
-                    {connected.has(selectedServer.id) ? "会话已打开" : "未连接"}
+                    {connected.has(selectedServer.id) ? "已连接" : "未连接"}
                   </span>
                 </div>
                 <div>
@@ -542,6 +1138,20 @@ export default function App() {
                       <Unplug size={15} />
                     </button>
                   )}
+                  {!connected.has(selectedServer.id) && (
+                    <button
+                      className="small-primary"
+                      disabled={!!connecting}
+                      onClick={() => void connectServer(selectedServer)}
+                    >
+                      {connecting === selectedServer.id ? (
+                        <LoaderCircle size={14} className="spin" />
+                      ) : (
+                        <ServerIcon size={14} />
+                      )}
+                      连接
+                    </button>
+                  )}
                   <button
                     className="small-primary"
                     disabled={!!connecting}
@@ -558,9 +1168,23 @@ export default function App() {
               </div>
             )}
             <div
-              className={`work-content ${terminalLarge ? "terminal-expanded" : ""}`}
+              className="work-content"
+              hidden={view === "terminal" && !agentOpen}
             >
               <div className="conversation">
+                {view === "terminal" && (
+                  <div className="agent-panel-heading">
+                    <Sparkles size={15} />
+                    <strong>智能体</strong>
+                    <button
+                      className="icon-button"
+                      aria-label="收起智能体面板"
+                      onClick={() => updateWorkspace({ agentOpen: false })}
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
                 {!messages.length ? (
                   <div className="welcome">
                     <div className="section-eyebrow">
@@ -666,6 +1290,46 @@ export default function App() {
                               </span>
                             )}
                           </div>
+                          {message.result?.nativeToolCalls ? (
+                            <p className="native-tool-note">
+                              已观察到 {message.result.nativeToolCalls} 次 CLI
+                              工具活动，详情保留在原生会话。
+                            </p>
+                          ) : null}
+                          {message.result?.permissionDenials ? (
+                            <p className="native-tool-note">
+                              CLI 有 {message.result.permissionDenials}{" "}
+                              项权限请求未获批准；可在原生终端处理。
+                            </p>
+                          ) : null}
+                          {message.result?.diagnostics && (
+                            <details className="diagnostics-card">
+                              <summary>
+                                本次只读状态快照 ·{" "}
+                                {message.result.diagnostics.source === "local"
+                                  ? "本机"
+                                  : "SFTP"}
+                              </summary>
+                              <small>
+                                {new Date(
+                                  message.result.diagnostics.collectedAt,
+                                ).toLocaleString()}
+                              </small>
+                              {message.result.diagnostics.entries.map(
+                                (entry) => (
+                                  <div key={entry.name}>
+                                    <strong>{entry.name}</strong>
+                                    <pre>
+                                      {entry.error
+                                        ? `读取失败：${entry.error}`
+                                        : entry.text}
+                                      {entry.truncated && "\n[内容已截断]"}
+                                    </pre>
+                                  </div>
+                                ),
+                              )}
+                            </details>
+                          )}
                           {message.result?.proposals.map((proposal, index) => {
                             const key = `${message.id}:${index}`;
                             return (
@@ -693,17 +1357,30 @@ export default function App() {
                                   <small>
                                     {servers.find(
                                       (s) => s.id === message.serverId,
-                                    )?.host ?? "请先选择服务器"}
+                                    )?.host ??
+                                      (message.serverId
+                                        ? "服务器已删除"
+                                        : "本机")}
                                   </small>
                                   <button
                                     disabled={
-                                      !message.serverId || !!busyCommand
+                                      permissions === "read-only" ||
+                                      !!busyCommand ||
+                                      message.serverId !== selected
+                                    }
+                                    title={
+                                      permissions === "read-only"
+                                        ? "只读权限不能执行命令"
+                                        : message.serverId !== selected
+                                          ? "请切换到此命令对应的处理位置"
+                                          : "逐条确认目标及命令"
                                     }
                                     onClick={() =>
                                       execute(
-                                        message.serverId!,
+                                        message.serverId,
                                         proposal.command,
                                         key,
+                                        message.sessionId,
                                       )
                                     }
                                   >
@@ -715,7 +1392,9 @@ export default function App() {
                                     ) : (
                                       <ArrowUpRight size={13} />
                                     )}
-                                    审批并执行
+                                    {permissions === "bypass"
+                                      ? "直接执行"
+                                      : "审批并执行"}
                                   </button>
                                 </div>
                                 {results[key] && (
@@ -754,10 +1433,11 @@ export default function App() {
                 <form className="composer" onSubmit={send}>
                   <textarea
                     aria-label="运维任务"
+                    disabled={!session}
                     placeholder={
                       selectedServer
                         ? `向助手描述 ${selectedServer.name} 的问题…`
-                        : "描述你的任务，或先选择一台服务器…"
+                        : "描述本机任务，或选择服务器后处理远程任务…"
                     }
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -768,34 +1448,82 @@ export default function App() {
                   />
                   <div className="composer-toolbar">
                     <div>
-                      <div className="engine-select">
-                        <Sparkles size={14} />
-                        <select
-                          aria-label="智能体引擎"
-                          value={engine}
-                          onChange={(e) => setEngine(e.target.value as Engine)}
-                        >
-                          <option value="builtin">内置运维助手</option>
-                          {cli.map((c) => (
-                            <option
-                              key={c.engine}
-                              value={c.engine}
-                              disabled={!c.installed}
-                            >
-                              {c.engine === "codex"
+                      <SelectMenu
+                        label="智能体引擎"
+                        compact
+                        icon={<Sparkles size={14} />}
+                        disabled={!!taskId}
+                        value={engine}
+                        onChange={(value) => setEngine(value as Engine)}
+                        options={[
+                          { value: "builtin", label: "内置运维助手" },
+                          ...cli.map((c) => ({
+                            value: c.engine,
+                            label:
+                              c.engine === "codex"
                                 ? "Codex CLI"
-                                : "Claude Code"}
-                              {!c.installed && " · 未安装"}
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronDown size={12} />
-                      </div>
+                                : "Claude Code",
+                            disabled: !c.installed,
+                          })),
+                        ]}
+                      />
+                      <AgentOptionsPicker
+                        engine={engine}
+                        selection={session?.agentOptions?.[engine] ?? {}}
+                        change={(selection) => {
+                          if (session)
+                            void window.axon.sessions
+                              .update(session.id, {
+                                agentOptions: {
+                                  ...session.agentOptions,
+                                  [engine]: selection,
+                                },
+                              })
+                              .then(mergeSession)
+                              .catch(report);
+                        }}
+                      />
                       <span className="composer-divider" />
-                      <span className="advice-badge">
-                        <ShieldCheck size={12} />
-                        建议模式
-                      </span>
+                      <SelectMenu
+                        label="权限策略"
+                        compact
+                        icon={<ShieldCheck size={12} />}
+                        disabled={!!taskId || !!busyCommand || !session}
+                        value={permissions}
+                        onChange={(value) => {
+                          if (session)
+                            void window.axon.sessions
+                              .update(session.id, {
+                                permissions: value as PermissionPolicy,
+                              })
+                              .then(mergeSession)
+                              .catch(report);
+                        }}
+                        options={[
+                          {
+                            value: "read-only",
+                            label: "只读",
+                            description: "分析状态，不执行命令或修改文件",
+                          },
+                          {
+                            value: "ask",
+                            label: "请求审批",
+                            description: "默认策略；应用命令逐条确认",
+                          },
+                          {
+                            value: "accept-edits",
+                            label: "允许项目编辑",
+                            description:
+                              "本机 CLI 可编辑项目；应用命令仍需确认",
+                          },
+                          {
+                            value: "bypass",
+                            label: "Bypass permissions",
+                            description:
+                              "跳过命令审批；本机 CLI 放开访问，仅当前 Session",
+                          },
+                        ]}
+                      />
                     </div>
                     <div>
                       <span className="send-hint">⌘ / Ctrl ↵</span>
@@ -814,7 +1542,11 @@ export default function App() {
                         <button
                           className="send-button"
                           aria-label="发送任务"
-                          disabled={!input.trim()}
+                          disabled={
+                            !input.trim() ||
+                            !session ||
+                            (!!selected && !connected.has(selected))
+                          }
                         >
                           <ArrowUp size={18} />
                         </button>
@@ -822,10 +1554,14 @@ export default function App() {
                     </div>
                   </div>
                 </form>
-                <div className="composer-note">
-                  {engine === "builtin"
-                    ? "请求会将任务与目标主机信息发送到你配置的模型服务；终端内容不会自动上传。"
-                    : "CLI 在本机运行，未连接远程服务器。Codex 使用只读沙箱；Claude 禁用工具。"}
+                <div
+                  className={`composer-note ${permissions === "bypass" ? "bypass-note" : ""}`}
+                >
+                  {permissions === "bypass"
+                    ? "Bypass permissions：当前处理位置的命令跳过审批；本机 CLI 可放开访问。"
+                    : permissions === "read-only"
+                      ? "只读权限：允许分析状态，不执行命令或修改文件。"
+                      : "命令按当前处理位置执行；应用命令仍需确认。"}
                 </div>
               </div>
               {showFiles && (
@@ -893,7 +1629,8 @@ export default function App() {
               )}
             </div>
             <section
-              className={`terminal-section ${terminalLarge ? "expanded" : ""}`}
+              className="terminal-section"
+              hidden={view !== "terminal" && !terminalOpen}
             >
               <div className="terminal-toolbar">
                 <div className="terminal-tabs">
@@ -901,7 +1638,7 @@ export default function App() {
                     <TerminalIcon size={14} />
                     TERMINAL
                   </span>
-                  {tabs.map((tab) => (
+                  {workspaceTabs.map((tab) => (
                     <div
                       key={tab.id}
                       className={`terminal-tab ${tab.id === activeTab ? "active" : ""}`}
@@ -924,6 +1661,7 @@ export default function App() {
                   ))}
                   <button
                     className="icon-button"
+                    aria-label="新建本地终端"
                     title="新建本地终端"
                     onClick={() => openTerminal()}
                   >
@@ -931,7 +1669,7 @@ export default function App() {
                   </button>
                 </div>
                 <div className="terminal-tools">
-                  {tabs.length > 0 && (
+                  {workspaceTabs.length > 0 && (
                     <label>
                       <Search size={13} />
                       <input
@@ -944,28 +1682,49 @@ export default function App() {
                   )}
                   <button
                     className="icon-button"
-                    title="终端最大化"
-                    onClick={() => setTerminalLarge((v) => !v)}
+                    aria-label={
+                      view === "terminal" ? "返回智能工作台" : "终端作为主视图"
+                    }
+                    title={
+                      view === "terminal" ? "返回智能工作台" : "终端作为主视图"
+                    }
+                    onClick={() =>
+                      setView(view === "terminal" ? "workspace" : "terminal")
+                    }
                   >
-                    {terminalLarge ? (
-                      <ArrowDown size={14} />
-                    ) : (
-                      <ArrowUp size={14} />
-                    )}
+                    <ArrowUpRight size={14} />
                   </button>
+                  {view === "workspace" && (
+                    <>
+                      <button
+                        className="icon-button"
+                        aria-label="收起终端面板"
+                        title="收起终端面板"
+                        onClick={() => updateWorkspace({ terminalOpen: false })}
+                      >
+                        <X size={16} />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="terminal-body">
-                {tabs.length ? (
-                  tabs.map((tab) => (
-                    <TerminalPane
-                      key={tab.id}
-                      id={tab.id}
-                      active={tab.id === activeTab}
-                      search={terminalSearch}
-                    />
-                  ))
-                ) : (
+                {tabs.map((tab) => (
+                  <TerminalPane
+                    key={tab.id}
+                    id={tab.id}
+                    active={
+                      tab.workspaceId === workspace.id &&
+                      tab.id === activeTab &&
+                      view !== "activity" &&
+                      view !== "handoff" &&
+                      modal !== "settings" &&
+                      (view === "terminal" || terminalOpen)
+                    }
+                    search={terminalSearch}
+                  />
+                ))}
+                {!workspaceTabs.length && (
                   <div className="terminal-empty">
                     <TerminalIcon size={24} />
                     <div>
@@ -981,16 +1740,16 @@ export default function App() {
               <div className="terminal-status">
                 <span>
                   <i className="status-dot online" />
-                  {tabs.filter((t) => !t.closed).length} 个活跃终端
+                  {workspaceTabs.filter((t) => !t.closed).length} 个活跃终端
                 </span>
                 <span>
                   UTF-8<span className="status-separator">·</span>xterm-256color
-                  <span className="status-separator">·</span>v0.1.0
+                  <span className="status-separator">·</span>v{version}
                 </span>
               </div>
             </section>
           </>
-        )}
+        </div>
       </main>
       {modal === "server" && (
         <ServerModal
@@ -998,26 +1757,139 @@ export default function App() {
           close={() => setModal(null)}
           save={async (input) => {
             const server = await window.axon.servers.save(input);
+            updateWorkspace({
+              serverIds: [...new Set([...workspace.serverIds, server.id])],
+            });
             await reload();
-            setSelected(server.id);
             setModal(null);
           }}
           remove={async (id) => {
             await window.axon.servers.remove(id);
             await reload();
-            setSelected(undefined);
+            if (selected === id) setSelected(undefined);
             setModal(null);
           }}
         />
       )}
-      {modal === "settings" && (
-        <SettingsModal
+      {modal === "project" && (
+        <ProjectModal
+          project={editingProject}
+          workspaceId={workspace.id}
+          servers={workspaceServers}
           close={() => setModal(null)}
-          cli={cli}
-          refreshCli={async () => setCli(await window.axon.agent.detect())}
-          launch={launchCli}
+          saved={(project) => {
+            setProjects((current) => [
+              ...current.filter((p) => p.id !== project.id),
+              project,
+            ]);
+            if (!editingProject) void createSession(project.id, project);
+            else if (session?.projectId === project.id)
+              void window.axon.sessions
+                .update(session.id, { projectId: project.id })
+                .then((next) => {
+                  mergeSession(next);
+                  applySession(next);
+                })
+                .catch(report);
+          }}
         />
       )}
+      {modal === "workspace" && (
+        <WorkspaceModal
+          servers={servers}
+          close={() => setModal(null)}
+          save={(name, serverIds) => {
+            const next = newWorkspace(name, serverIds);
+            setWorkspaceState((current) => ({
+              ...current,
+              workspaces: [...current.workspaces, next],
+              activeId: next.id,
+            }));
+            setQuery("");
+            setError("");
+            setModal(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function WorkspaceModal({
+  servers,
+  close,
+  save,
+}: {
+  servers: Server[];
+  close(): void;
+  save(name: string, serverIds: string[]): void;
+}) {
+  const [name, setName] = useState("");
+  const [serverIds, setServerIds] = useState<string[]>([]);
+  return (
+    <div className="modal-overlay" onClick={close}>
+      <form
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) save(name.trim(), serverIds);
+        }}
+      >
+        <div className="modal-head">
+          <div className="modal-icon">
+            <FolderOpen size={20} />
+          </div>
+          <button type="button" aria-label="关闭" onClick={close}>
+            <X size={18} />
+          </button>
+        </div>
+        <h2>新建工作空间</h2>
+        <p className="muted">为不同项目组织服务器、终端和智能体任务。</p>
+        <label>
+          工作空间名称
+          <input
+            autoFocus
+            required
+            maxLength={60}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="例如：开发环境"
+          />
+        </label>
+        {!!servers.length && (
+          <fieldset className="workspace-server-options">
+            <legend>关联已有服务器（可选）</legend>
+            {servers.map((s) => (
+              <label key={s.id}>
+                <input
+                  type="checkbox"
+                  checked={serverIds.includes(s.id)}
+                  onChange={(e) =>
+                    setServerIds((current) =>
+                      e.target.checked
+                        ? [...current, s.id]
+                        : current.filter((id) => id !== s.id),
+                    )
+                  }
+                />
+                <span>
+                  {s.name}
+                  <small>{s.host}</small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        )}
+        <div className="modal-footer">
+          <button type="button" className="secondary-button" onClick={close}>
+            取消
+          </button>
+          <button className="primary-button" disabled={!name.trim()}>
+            创建工作空间
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -1147,23 +2019,40 @@ function ServerModal({
             />
           </label>
         </div>
-        <label>
-          认证方式
-          <select
+        <div className="select-field">
+          <span>认证方式</span>
+          <SelectMenu
+            label="认证方式"
             value={value.authType}
-            onChange={(e) =>
+            onChange={(authType) =>
               setValue({
                 ...value,
-                authType: e.target.value as ServerInput["authType"],
+                authType: authType as ServerInput["authType"],
                 secret: undefined,
               })
             }
-          >
-            <option value="agent">SSH Agent（推荐）</option>
-            <option value="key">私钥文件</option>
-            <option value="password">密码</option>
-          </select>
-        </label>
+            options={[
+              {
+                value: "agent",
+                label: "SSH Agent（推荐）",
+                description: "使用本机代理中的密钥",
+                icon: <ShieldCheck size={16} />,
+              },
+              {
+                value: "key",
+                label: "私钥文件",
+                description: "指定本机私钥路径",
+                icon: <KeyRound size={16} />,
+              },
+              {
+                value: "password",
+                label: "密码",
+                description: "凭据由系统安全存储加密",
+                icon: <KeyRound size={16} />,
+              },
+            ]}
+          />
+        </div>
         {value.authType === "key" && (
           <label>
             私钥路径
@@ -1239,7 +2128,7 @@ function ServerModal({
     </div>
   );
 }
-function SettingsModal({
+function SettingsPage({
   close,
   cli,
   refreshCli,
@@ -1272,6 +2161,8 @@ function SettingsModal({
           baseUrl: settings.baseUrl,
           model: settings.model,
           apiKey,
+          provider: settings.provider,
+          reasoningEffort: settings.reasoningEffort,
         }),
       );
       setApiKey(undefined);
@@ -1283,137 +2174,224 @@ function SettingsModal({
     }
   }
   return (
-    <div className="modal-overlay">
-      <form
-        className="modal settings-modal"
-        onSubmit={submit}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-      >
-        <div className="modal-head">
-          <div className="modal-icon">
-            <SettingsIcon size={20} />
-          </div>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="关闭"
-            onClick={close}
-          >
-            <X size={18} />
-          </button>
-        </div>
-        <h2 id="settings-title">设置与模型</h2>
-        <p className="muted">使用兼容 OpenAI Chat Completions 的模型服务。</p>
-        {settings && (
-          <>
-            <label>
-              API Base URL
-              <input
-                required
-                type="url"
-                value={settings.baseUrl}
-                onChange={(e) => {
-                  setSettings({ ...settings, baseUrl: e.target.value });
-                  setSaved(false);
-                }}
-              />
-            </label>
-            <label>
-              模型
-              <input
-                required
-                value={settings.model}
-                onChange={(e) =>
-                  setSettings({ ...settings, model: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              API Key
-              <input
-                type="password"
-                value={apiKey ?? ""}
-                autoComplete="new-password"
-                placeholder={
-                  settings.hasApiKey
-                    ? "已加密保存，留空保留"
-                    : "sk-…（本地模型可留空）"
-                }
-                onChange={(e) => setApiKey(e.target.value || undefined)}
-              />
-            </label>
-            <small className="muted">
-              更换服务域名时，请重新填写 API Key。远程服务必须使用 HTTPS。
-            </small>
-          </>
-        )}
-        <div className="settings-divider" />
-        <div className="cli-heading">
-          <h3>外部智能体</h3>
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => refreshCli().catch((e) => setError(errorText(e)))}
-          >
-            重新检测
-          </button>
-        </div>
-        {cli.map((c) => (
-          <div className="cli-row" key={c.engine}>
-            <div className="cli-logo">
-              <Bot size={18} />
-            </div>
+    <form className="settings-page" onSubmit={submit} aria-label="设置与模型">
+      <div className="settings-scroll">
+        <div className="settings-inner">
+          <header className="settings-page-heading">
             <div>
-              <strong>
-                {c.engine === "codex" ? "Codex CLI" : "Claude Code"}
-              </strong>
-              <small>
-                {c.installed ? c.path : "未在 PATH 或常见安装目录中发现"}
-              </small>
+              <div className="section-eyebrow">PREFERENCES</div>
+              <h1>设置与模型</h1>
+              <p className="muted">管理外观、模型服务与外部智能体。</p>
             </div>
-            <button
-              type="button"
-              disabled={!c.installed}
-              className="secondary-button"
-              onClick={() => {
-                void launch(c.engine);
-                close();
-              }}
-            >
-              在终端打开
+            <button type="button" className="secondary-button" onClick={close}>
+              <ArrowLeft size={15} />
+              返回会话
             </button>
-          </div>
-        ))}
-        <div className="form-note">
-          <ShieldCheck size={15} />
-          <span>
-            原生 CLI
-            终端拥有用户自己的本地权限；应用的远程命令审批只适用于“审批并执行”入口。
-          </span>
-        </div>
-        {error && <p className="form-error">{error}</p>}
-        <div className="modal-footer">
-          {saved && (
-            <span className="saved-note">
-              <Check size={14} />
-              已保存
-            </span>
-          )}
-          <button type="button" className="secondary-button" onClick={close}>
-            关闭
-          </button>
-          <button className="primary-button" disabled={busy || !settings}>
-            {busy ? (
-              <LoaderCircle size={14} className="spin" />
-            ) : (
-              <Check size={14} />
+          </header>
+          <nav className="settings-navigation" aria-label="设置分类">
+            {[
+              ["settings-appearance", "外观"],
+              ["settings-model", "模型服务"],
+              ["settings-cli", "外部智能体"],
+            ].map(([id, title]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() =>
+                  document
+                    .getElementById(id)
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              >
+                {title}
+              </button>
+            ))}
+          </nav>
+          <div className="settings-sections">
+            <section className="settings-section" id="settings-appearance">
+              <ThemeSettings />
+            </section>
+            {settings && (
+              <section className="settings-section" id="settings-model">
+                <h2>模型服务</h2>
+                <p className="muted">
+                  内置智能体的 API 配置，修改后点击保存设置。
+                </p>
+                <div className="select-field">
+                  <span>内置模型方案</span>
+                  <SelectMenu
+                    label="内置模型方案"
+                    value={settings.provider ?? "compatible"}
+                    onChange={(provider) => {
+                      setSettings({
+                        ...settings,
+                        provider: provider as Settings["provider"],
+                        ...(provider === "deepseek"
+                          ? {
+                              baseUrl: "https://api.deepseek.com",
+                              model: "deepseek-flash",
+                              reasoningEffort: "none" as const,
+                            }
+                          : {}),
+                      });
+                      setSaved(false);
+                    }}
+                    options={[
+                      {
+                        value: "deepseek",
+                        label: "DeepSeek 官方 API",
+                        description: "官方模型与思考模式",
+                      },
+                      {
+                        value: "compatible",
+                        label: "兼容 Chat Completions",
+                        description: "保留自定义模型服务",
+                      },
+                    ]}
+                  />
+                </div>
+                {settings.provider === "deepseek" && (
+                  <div className="select-field">
+                    <span>内置默认思考强度</span>
+                    <SelectMenu
+                      label="内置默认思考强度"
+                      value={settings.reasoningEffort ?? "none"}
+                      onChange={(effort) =>
+                        setSettings({
+                          ...settings,
+                          reasoningEffort:
+                            effort as Settings["reasoningEffort"],
+                        })
+                      }
+                      options={[
+                        {
+                          value: "none",
+                          label: "无",
+                          description: "关闭思考模式",
+                        },
+                        { value: "low", label: "低" },
+                        { value: "high", label: "高" },
+                        { value: "max", label: "最大" },
+                      ]}
+                    />
+                  </div>
+                )}
+                <label>
+                  API Base URL
+                  <input
+                    required
+                    type="url"
+                    value={settings.baseUrl}
+                    onChange={(e) => {
+                      setSettings({ ...settings, baseUrl: e.target.value });
+                      setSaved(false);
+                    }}
+                  />
+                </label>
+                <label>
+                  模型
+                  <input
+                    required
+                    value={settings.model}
+                    onChange={(e) =>
+                      setSettings({ ...settings, model: e.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  API Key
+                  <input
+                    type="password"
+                    value={apiKey ?? ""}
+                    autoComplete="new-password"
+                    placeholder={
+                      settings.hasApiKey
+                        ? "已加密保存，留空保留"
+                        : "sk-…（本地模型可留空）"
+                    }
+                    onChange={(e) => setApiKey(e.target.value || undefined)}
+                  />
+                </label>
+                <small className="muted">
+                  更换服务域名时，请重新填写 API Key。远程服务必须使用 HTTPS。
+                </small>
+              </section>
             )}
-            保存设置
-          </button>
+            <section className="settings-section" id="settings-cli">
+              <div className="cli-heading">
+                <h3>外部智能体</h3>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() =>
+                    refreshCli().catch((e) => setError(errorText(e)))
+                  }
+                >
+                  重新检测
+                </button>
+              </div>
+              {cli.map((c) => (
+                <div className="cli-row" key={c.engine}>
+                  <div className="cli-logo">
+                    <Bot size={18} />
+                  </div>
+                  <div>
+                    <strong>
+                      {c.engine === "codex" ? "Codex CLI" : "Claude Code"}
+                    </strong>
+                    <small>
+                      {c.installed ? c.path : "未在 PATH 或常见安装目录中发现"}
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!c.installed}
+                    className="secondary-button"
+                    onClick={() => {
+                      void launch(c.engine);
+                      close();
+                    }}
+                  >
+                    在终端打开
+                  </button>
+                </div>
+              ))}
+              <div className="form-note">
+                <ShieldCheck size={15} />
+                <span>
+                  原生 CLI
+                  终端拥有用户自己的本地权限；应用的远程命令审批只适用于“审批并执行”入口。
+                </span>
+              </div>
+            </section>
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
         </div>
-      </form>
-    </div>
+      </div>
+      <footer className="settings-page-footer">
+        <span className="settings-save-hint">
+          外观自动保存 · 模型服务需保存设置
+        </span>
+        {saved && (
+          <span className="saved-note">
+            <Check size={14} />
+            已保存
+          </span>
+        )}
+
+        <button className="primary-button" disabled={busy || !settings}>
+          {busy ? (
+            <LoaderCircle size={14} className="spin" />
+          ) : (
+            <Check size={14} />
+          )}
+          保存设置
+        </button>
+      </footer>
+    </form>
   );
 }

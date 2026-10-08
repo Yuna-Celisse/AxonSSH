@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { subscribeTerminal } from "./terminalHub";
+import { subscribeTheme, terminalTheme } from "./theme";
 export default function TerminalPane({
   id,
   active,
@@ -24,12 +25,7 @@ export default function TerminalPane({
       fontSize: 13,
       lineHeight: 1.3,
       scrollback: 5000,
-      theme: {
-        background: "#101114",
-        foreground: "#c7cbd3",
-        cursor: "#db9872",
-        selectionBackground: "#424553",
-      },
+      theme: terminalTheme(),
     });
     const fitAddon = new FitAddon(),
       searchAddon = new SearchAddon();
@@ -37,6 +33,9 @@ export default function TerminalPane({
     term.loadAddon(searchAddon);
     term.open(element.current!);
     terminal.current = term;
+    const stopTheme = subscribeTheme(() => {
+      term.options.theme = terminalTheme();
+    });
     fit.current = fitAddon;
     finder.current = searchAddon;
     let closed = false;
@@ -58,7 +57,11 @@ export default function TerminalPane({
           });
     });
     const observer = new ResizeObserver(() => {
-      if (element.current && element.current.clientWidth > 0) {
+      if (
+        element.current &&
+        element.current.clientWidth > 0 &&
+        element.current.clientHeight > 0
+      ) {
         fitAddon.fit();
         void window.axon.terminal
           .resize(id, term.cols, term.rows)
@@ -68,6 +71,7 @@ export default function TerminalPane({
     observer.observe(element.current!);
     return () => {
       observer.disconnect();
+      stopTheme();
       unsubscribe();
       input.dispose();
       term.dispose();
@@ -75,17 +79,27 @@ export default function TerminalPane({
     };
   }, [id]);
   useEffect(() => {
-    if (active) {
+    if (
+      active &&
+      element.current?.clientWidth &&
+      element.current?.clientHeight
+    ) {
       fit.current?.fit();
+      const term = terminal.current;
+      if (term)
+        void window.axon.terminal
+          .resize(id, term.cols, term.rows)
+          .catch(() => {});
       terminal.current?.focus();
     }
-  }, [active]);
+  }, [active, id]);
   useEffect(() => {
     if (search) finder.current?.findNext(search);
   }, [search]);
   return (
     <div
       className="terminal-canvas"
+      data-terminal-id={id}
       ref={element}
       style={{ display: active ? "block" : "none" }}
     />

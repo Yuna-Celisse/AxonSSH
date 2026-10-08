@@ -2,7 +2,12 @@ import { Client, type ClientChannel, type ConnectConfig } from "ssh2";
 import { readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import type { AppEvent, CommandResult, FileEntry } from "../shared/types";
+import type {
+  AppEvent,
+  CommandResult,
+  FileEntry,
+  Diagnostics,
+} from "../shared/types";
 import type { Store } from "./store";
 
 export class SSHService {
@@ -83,7 +88,10 @@ export class SSHService {
         if (!ready) reject(new Error(verificationError ?? error.message));
       });
       client.once("close", () => {
-        if (this.connections.get(id) === client) this.connections.delete(id);
+        if (this.connections.get(id) === client) {
+          this.connections.delete(id);
+          this.emit({ type: "server:status", id, connected: false });
+        }
         if (this.pendingClients.get(id) === client)
           this.pendingClients.delete(id);
         if (!ready)
@@ -95,6 +103,7 @@ export class SSHService {
           ready = true;
           this.pendingClients.delete(id);
           this.connections.set(id, client);
+          this.emit({ type: "server:status", id, connected: true });
           resolve();
         } catch (error) {
           client.end();
@@ -111,6 +120,9 @@ export class SSHService {
     const client = this.connections.get(id);
     if (!client) throw new Error("SSH 已断开，请重新连接");
     return client;
+  }
+  connectedIds() {
+    return [...this.connections.keys()];
   }
   async openTerminal(serverId: string) {
     await this.connect(serverId);
@@ -157,9 +169,16 @@ export class SSHService {
   hasTerminal(id: string) {
     return this.terminals.has(id);
   }
-  async execute(serverId: string, command: string): Promise<CommandResult> {
+  async execute(
+    serverId: string,
+    command: string,
+    sessionId?: string,
+    proposalKey?: string,
+    approval?: "confirmed" | "bypassed",
+  ): Promise<CommandResult> {
     if (this.busy.has(serverId))
       throw new Error("此服务器有命令正在执行，请等待完成");
+    const targetKey = this.store.targetKey(serverId);
     this.busy.add(serverId);
     const started = Date.now();
     try {
@@ -214,6 +233,11 @@ export class SSHService {
         code: result.code,
         createdAt: new Date().toISOString(),
         durationMs: Date.now() - started,
+        sessionId,
+        targetKey,
+        proposalKey,
+        approval,
+        result,
       });
       return result;
     } catch (error) {
@@ -224,6 +248,10 @@ export class SSHService {
         code: null,
         createdAt: new Date().toISOString(),
         durationMs: Date.now() - started,
+        sessionId,
+        targetKey,
+        proposalKey,
+        approval,
       });
       throw error;
     } finally {
@@ -256,10 +284,107 @@ export class SSHService {
       });
     });
   }
+  async diagnostics(
+    serverId: string,
+    signal: AbortSignal,
+  ): Promise<Diagnostics> {
+    await this.connect(serverId);
+    if (signal.aborted) throw new Error("诊断已取消");
+    const sftp = await new Promise<import("ssh2").SFTPWrapper>(
+      (resolve, reject) =>
+        this.connection(serverId).sftp((error, value) =>
+          error ? reject(error) : resolve(value),
+        ),
+    );
+    const entries: Diagnostics["entries"] = [];
+    sftp.on("error", () => {});
+    try {
+      for (const path of [
+        "/etc/os-release",
+        "/proc/loadavg",
+        "/proc/meminfo",
+        "/proc/uptime",
+      ]) {
+        if (signal.aborted) throw new Error("诊断已取消");
+        try {
+          const read = await new Promise<{ text: string; truncated: boolean }>(
+            (resolve, reject) => {
+              let handle: Buffer | undefined,
+                completed = false,
+                count = 0;
+              const chunks: Buffer[] = [];
+              const finish = (error?: Error, truncated = false) => {
+                if (completed) return;
+                completed = true;
+                clearTimeout(timer);
+                signal.removeEventListener("abort", abort);
+                if (handle) sftp.close(handle, () => {});
+                error
+                  ? reject(error)
+                  : resolve({
+                      text: Buffer.concat(chunks).toString("utf8"),
+                      truncated,
+                    });
+              };
+              const abort = () => finish(new Error("诊断已取消"));
+              const timer = setTimeout(
+                () => finish(new Error("读取超时")),
+                15000,
+              );
+              signal.addEventListener("abort", abort, { once: true });
+              sftp.open(path, "r", (error, value) => {
+                if (completed) {
+                  if (value) sftp.close(value, () => {});
+                  return;
+                }
+                if (error) return finish(error);
+                handle = value;
+                const next = () => {
+                  if (completed) return;
+                  const buffer = Buffer.alloc(Math.min(1024, 4096 - count));
+                  sftp.read(
+                    value,
+                    buffer,
+                    0,
+                    buffer.length,
+                    count,
+                    (error, bytes) => {
+                      if (completed) return;
+                      if (error)
+                        return (error as Error & { code?: number }).code === 1
+                          ? finish()
+                          : finish(error);
+                      if (!bytes) return finish();
+                      chunks.push(buffer.subarray(0, bytes));
+                      count += bytes;
+                      if (count >= 4096) return finish(undefined, true);
+                      next();
+                    },
+                  );
+                };
+                next();
+              });
+            },
+          );
+          entries.push({ name: path, ...read });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          entries.push({
+            name: path,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return { source: "sftp", collectedAt: new Date().toISOString(), entries };
+    } finally {
+      sftp.end();
+    }
+  }
   disconnect(id: string) {
     this.pendingClients.get(id)?.destroy();
     this.connections.get(id)?.end();
     this.connections.delete(id);
+    this.emit({ type: "server:status", id, connected: false });
   }
   dispose() {
     for (const client of this.pendingClients.values()) client.destroy();

@@ -5,7 +5,8 @@ let unsubscribe: (() => void) | undefined;
 export function startTerminalHub() {
   if (!unsubscribe)
     unsubscribe = window.axon.onEvent((event) => {
-      if (event.type === "agent:delta") return;
+      if (event.type === "agent:delta" || event.type === "server:status")
+        return;
       if (event.type === "terminal:data")
         history.set(
           event.id,

@@ -50,10 +50,67 @@ export const settingsSchema = z.object({
     }, "仅支持 HTTPS 或本机 HTTP，URL 不能包含凭据、查询参数或片段"),
   model: z.string().trim().min(1).max(200),
   apiKey: z.string().max(4096).optional(),
+  provider: z.enum(["deepseek", "compatible"]).optional(),
+  reasoningEffort: z.enum(["none", "low", "high", "max"]).optional(),
 });
 export const agentSchema = z.object({
+  permissions: z
+    .enum(["read-only", "ask", "accept-edits", "bypass"])
+    .optional(),
   taskId: idSchema,
   engine: z.enum(["builtin", "codex", "claude"]),
   message: z.string().trim().min(1).max(32000),
   serverId: idSchema.optional(),
+  sessionId: idSchema.optional(),
+  userMessageId: idSchema.optional(),
+  model: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .refine((v) => !/[\x00-\x1f]/.test(v))
+    .optional(),
+  effort: z
+    .string()
+    .regex(/^[a-z_]{1,24}$/)
+    .optional(),
+});
+export const agentSelectionSchema = agentSchema.pick({
+  model: true,
+  effort: true,
+});
+export const sessionPatchSchema = z.object({
+  permissions: z
+    .enum(["read-only", "ask", "accept-edits", "bypass"])
+    .optional(),
+  projectId: idSchema.nullable().optional(),
+  title: z.string().trim().min(1).max(100).optional(),
+  serverId: idSchema.nullable().optional(),
+  engine: z.enum(["builtin", "codex", "claude"]).optional(),
+  agentOptions: z
+    .record(z.enum(["builtin", "codex", "claude"]), agentSelectionSchema)
+    .optional(),
+});
+export const projectSchema = z.object({
+  includeLocal: z.boolean().optional(),
+  serverIds: z.array(idSchema).max(100).optional(),
+  remoteDirectory: z
+    .string()
+    .trim()
+    .max(4096)
+    .refine(
+      (v) => !/[\x00-\x1f]/.test(v) && (!v || v.startsWith("/")),
+      "远程目录需为 Linux 绝对路径",
+    )
+    .optional(),
+  id: idSchema.optional(),
+  workspaceId: idSchema,
+  name: z.string().trim().min(1).max(100),
+  directory: z
+    .string()
+    .trim()
+    .max(4096)
+    .refine((v) => !v.includes("\0"))
+    .optional(),
+  archived: z.boolean().optional(),
 });

@@ -1,6 +1,6 @@
 {
   "name": "axonssh",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A local-first SSH desktop workspace with terminals and AI-assisted operations",
   "main": "./out/main/index.js",
   "author": "AxonSSH contributors",
@@ -16,6 +16,7 @@
     "test:desktop": "npm run build && playwright test",
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win --config.npmRebuild=false",
     "postinstall": "install-electron && electron-builder install-app-deps",
     "format": "prettier --write src tests docs/*.md README.md *.json *.ts .github/workflows/*.yml",
     "format:check": "prettier --check src tests docs/*.md README.md *.json *.ts .github/workflows/*.yml"

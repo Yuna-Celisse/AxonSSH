@@ -5,7 +5,7 @@ import type { AppEvent } from "../shared/types";
 export class LocalTerminals {
   private sessions = new Map<string, pty.IPty>();
   constructor(private emit: (event: AppEvent) => void) {}
-  open(executable?: string) {
+  open(executable?: string, args: string[] = [], cwd?: string) {
     const id = randomUUID();
     const shell =
       executable ??
@@ -18,11 +18,11 @@ export class LocalTerminals {
       ),
     );
     delete env.ELECTRON_RUN_AS_NODE;
-    const processPty = pty.spawn(shell, [], {
+    const processPty = pty.spawn(shell, args, {
       name: "xterm-256color",
       cols: 100,
       rows: 28,
-      cwd: homedir(),
+      cwd: cwd ?? homedir(),
       env,
     });
     this.sessions.set(id, processPty);
