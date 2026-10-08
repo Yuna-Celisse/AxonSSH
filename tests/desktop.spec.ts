@@ -102,11 +102,14 @@ test("desktop: real local PTY, SSH profile, model proposal, native approval, exe
           channel.write("SSH_FIXTURE_CONNECTED\r\n");
         });
         session.on("exec", (accept, _reject, info) => {
-          executions++;
           const channel = accept();
-          channel.write(`fixture: ${info.command}\n`);
-          channel.exit(0);
-          channel.end();
+          // Exercise asynchronous completion on fast machines as well as CI.
+          setTimeout(() => {
+            executions++;
+            channel.write(`fixture: ${info.command}\n`);
+            channel.exit(0);
+            channel.end();
+          }, 100);
         });
         session.on("sftp", (accept) => {
           const sftp = accept();
@@ -375,20 +378,23 @@ test("desktop: real local PTY, SSH profile, model proposal, native approval, exe
       .getByRole("button", { name: "直接执行", exact: true })
       .first()
       .click();
+    await expect
+      .poll(async () => {
+        return page.evaluate(async () => {
+          const w = JSON.parse(localStorage.getItem("axonssh.workspaces.v1")!)
+            .workspaces[0];
+          return (await window.axon.activity.list(w.activeSessionId)).some(
+            (a) => a.approval === "bypassed",
+          );
+        });
+      })
+      .toBe(true);
     expect(executions).toBe(2);
     expect(
       await application.evaluate(
         () => (globalThis as any).__axonDialogs.length,
       ),
     ).toBe(2);
-    const bypassRecorded = await page.evaluate(async () => {
-      const w = JSON.parse(localStorage.getItem("axonssh.workspaces.v1")!)
-        .workspaces[0];
-      return (await window.axon.activity.list(w.activeSessionId)).some(
-        (a) => a.approval === "bypassed",
-      );
-    });
-    expect(bypassRecorded).toBe(true);
     await page.reload();
     await expect(
       page.getByRole("combobox", { name: "权限策略", exact: true }),
