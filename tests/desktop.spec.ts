@@ -527,16 +527,25 @@ test("workspace panels preserve live terminals, isolate drafts and persist layou
     expect(terminalBounds!.x).toBeGreaterThan(
       conversationBounds!.x + conversationBounds!.width - 1,
     );
-    await page.getByRole("button", { name: "收起终端面板" }).click();
+    // The right-hand workspace panel is the only placement; the toolbar toggle
+    // keeps a constant accessible name and reports its state via aria-pressed.
+    const workspacePanel = page.getByRole("button", {
+      name: "右侧工作区",
+      exact: true,
+    });
+    await expect(workspacePanel).toHaveAttribute("aria-pressed", "true");
+    await workspacePanel.click();
     await expect(page.locator(".terminal-section")).toBeHidden();
+    await expect(workspacePanel).toHaveAttribute("aria-pressed", "false");
     await run(
       process.platform === "win32"
         ? "Write-Output ('HIDDEN_' + ($axonPanelSession * 37))\r"
         : "printf 'HIDDEN_%s\\n' \"$((AXON_PANEL_SESSION * 37))\"\r",
       "HIDDEN_703",
     );
-    await page.getByRole("button", { name: "右侧终端", exact: true }).click();
+    await workspacePanel.click();
     await expect(page.locator(".terminal-section")).toBeVisible();
+    await expect(workspacePanel).toHaveAttribute("aria-pressed", "true");
     expect(
       await page.evaluate(
         () =>
@@ -544,15 +553,24 @@ test("workspace panels preserve live terminals, isolate drafts and persist layou
           document.querySelector(".terminal-canvas"),
       ),
     ).toBe(true);
-    await page.getByRole("button", { name: "终端作为主视图" }).click();
+    await page
+      .locator(".view-switch")
+      .getByRole("button", { name: "终端主视图", exact: true })
+      .click();
     await expect(page.locator(".conversation")).toBeHidden();
-    await page.getByRole("button", { name: "右侧智能体", exact: true }).click();
+    const agentPanel = page.getByRole("button", {
+      name: "智能体侧边栏",
+      exact: true,
+    });
+    await expect(agentPanel).toHaveAttribute("aria-pressed", "false");
+    await agentPanel.click();
     await expect(page.getByLabel("运维任务")).toHaveValue("原工作空间的草稿");
     await page.screenshot({
       path: testInfo.outputPath("terminal-with-agent.png"),
     });
-    await page.getByRole("button", { name: "收起智能体面板" }).click();
+    await agentPanel.click();
     await expect(page.locator(".conversation")).toBeHidden();
+    await expect(agentPanel).toHaveAttribute("aria-pressed", "false");
     await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
     await expect(page.locator(".sidebar")).toBeHidden();
     await page.getByRole("button", { name: "展开侧边栏", exact: true }).click();
@@ -595,7 +613,7 @@ test("workspace panels preserve live terminals, isolate drafts and persist layou
       "data-terminal-id",
       terminalId!,
     );
-    await page.getByRole("button", { name: "右侧智能体", exact: true }).click();
+    await agentPanel.click();
     await expect(page.getByLabel("运维任务")).toHaveValue("原工作空间的草稿");
     await run(
       process.platform === "win32"
@@ -606,12 +624,12 @@ test("workspace panels preserve live terminals, isolate drafts and persist layou
     await page.getByRole("combobox", { name: "工作空间", exact: true }).click();
     await page.getByRole("option", { name: "开发环境", exact: true }).click();
     await expect(page.getByLabel("运维任务")).toHaveValue("开发环境的草稿");
-    await page.getByRole("button", { name: "右侧终端", exact: true }).click();
-    await page
-      .getByRole("button", { name: "收起终端面板", exact: true })
-      .click();
+    await workspacePanel.click();
+    await expect(workspacePanel).toHaveAttribute("aria-pressed", "true");
+    await workspacePanel.click();
     await expect(page.locator(".terminal-section")).toBeHidden();
-    await page.getByRole("button", { name: "右侧终端", exact: true }).click();
+    await expect(workspacePanel).toHaveAttribute("aria-pressed", "false");
+    await workspacePanel.click();
     await page.getByRole("button", { name: "收起侧边栏", exact: true }).click();
     await page.screenshot({
       path: testInfo.outputPath("workspace-with-terminal.png"),

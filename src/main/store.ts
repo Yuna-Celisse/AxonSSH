@@ -161,7 +161,31 @@ export class Store {
     ]);
     this.flush();
   }
+  jumpDependents(id: string): Server[] {
+    return this.listServers().filter((server) => server.jumpServerId === id);
+  }
+  /** Rejects missing jump targets and chains that loop back on themselves. */
+  assertJumpTarget(id: string | undefined, jumpServerId?: string): void {
+    if (!jumpServerId) return;
+    const visited = new Set<string>();
+    let current: string | undefined = this.server(jumpServerId).jumpServerId;
+    while (current) {
+      if (current === id || visited.has(current)) {
+        throw new Error("跳板机链路存在循环引用");
+      }
+      visited.add(current);
+      current = this.server(current).jumpServerId;
+    }
+  }
   removeServer(id: string) {
+    const dependents = this.jumpDependents(id);
+    if (dependents.length) {
+      throw new Error(
+        `该服务器仍被 ${dependents.length} 个档案用作跳板机（${dependents
+          .map((server) => server.name)
+          .join("、")}），请先在相关档案中解除关联`,
+      );
+    }
     this.db.run("DELETE FROM servers WHERE id = ?", [id]);
     this.flush();
   }

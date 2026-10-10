@@ -26,6 +26,7 @@ describe("native CLI permission mapping", () => {
     expect(cliArguments({ engine: "codex" })).not.toContain(
       "--dangerously-bypass-approvals-and-sandbox",
     );
+    expect(cliArguments({ engine: "codex" })).toContain("--no-daemon");
   });
   it("applies local permissions and keeps server analysis tools restricted with exact resume IDs", () => {
     const resumed = cliArguments(
@@ -33,6 +34,7 @@ describe("native CLI permission mapping", () => {
       "task",
       "saved-thread",
     );
+    expect(resumed).toContain("--no-daemon");
     expect(resumed).toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(resumed).toContain("saved-thread");
     expect(resumed).not.toContain("--last");

@@ -16,6 +16,10 @@ export const serverSchema = z
     authType: z.enum(["password", "key", "agent"]),
     privateKeyPath: z.string().max(4096).optional(),
     secret: z.string().max(16384).optional(),
+    jumpServerId: idSchema
+      .optional()
+      .nullable()
+      .transform((v) => v || undefined),
   })
   .superRefine((s, ctx) => {
     if (s.authType === "key" && !s.privateKeyPath)
@@ -23,6 +27,12 @@ export const serverSchema = z
         code: "custom",
         path: ["privateKeyPath"],
         message: "请选择私钥路径",
+      });
+    if (s.id && s.jumpServerId && s.id === s.jumpServerId)
+      ctx.addIssue({
+        code: "custom",
+        path: ["jumpServerId"],
+        message: "跳板机不能是服务器自身",
       });
   });
 export const commandSchema = z

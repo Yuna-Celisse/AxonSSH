@@ -2,7 +2,7 @@
 
 A local-first desktop workspace for SSH servers, terminals, and AI-assisted operations. Built with Electron, React, and TypeScript; inspired by the task-oriented layouts of Codex Desktop and Claude Desktop.
 
-> **v0.1.1 alpha:** configurable workspaces and collapsible terminal/agent panels, real SSH and local terminals, encrypted credential storage, model-assisted command proposals, and optional local CLI adapters. Remote commands require native confirmation by default; an explicit per-Session Bypass permissions policy can skip it.
+> **v0.1.1 alpha:** configurable workspaces and collapsible terminal/agent panels, real SSH and local terminals, encrypted credential storage, model-assisted command proposals, jump-host chaining with OpenSSH config import, and optional local CLI adapters. Remote commands require native confirmation by default; an explicit per-Session Bypass permissions policy can skip it.
 
 ![AxonSSH desktop workspace](docs/screenshot.png)
 
@@ -42,6 +42,8 @@ Desktop integration tests require a display; on Linux CI, run `xvfb-run -a npm r
 - Real SSH PTY and local terminal tabs, xterm rendering, resize, terminal search, and maximize.
 - Independent SSH `exec` channels for approved commands, separate stdout/stderr, exit status, bounded output, and a 60-second timeout.
 - SFTP directory browsing, including parent navigation and explicit path input.
+- Jump hosts: a profile can connect through another profile over SSH direct-tcpip forwarding, with cycle detection when saving and delete protection while it is still referenced.
+- OpenSSH config import from `~/.ssh/config`, following `Include` files. Entries that cannot be represented are reported instead of being silently imported as direct connections.
 - Built-in advisory assistant using an OpenAI-compatible Chat Completions endpoint. Supports local HTTP endpoints and remote HTTPS endpoints.
 - Structured command proposals, exact target/command binding, single-use approval tokens, and a native confirmation dialog before execution.
 - Optional Codex CLI and Claude Code detection, advisory chat adapters, cancellation, and native interactive CLI terminal launch.
@@ -61,7 +63,7 @@ In **Settings & models → Appearance**, choose **System**, **Light**, or **Dark
 
 Use the workspace selector's **+** button to create a workspace and optionally associate existing server profiles. New profiles are added to the current workspace. Workspaces can share a server profile; editing its connection settings updates that shared profile.
 
-The sidebar organizes **workspaces, Sessions, and servers**. Create Sessions with the **+** button and rename the current Session in its header. Each Session contains its own conversation and **Execution records** tab. The top toolbar provides peer **Intelligent workspace** and **Terminal** views. In the workspace view, open or collapse the terminal on the right. In the terminal view, open or collapse the assistant on the right. Collapsing a panel, changing its placement, or switching workspaces keeps live terminals running. **Closing a terminal tab** ends its session.
+The sidebar organizes **workspaces, Sessions, and servers**. Create Sessions with the **+** button and rename the current Session in its header. Each Session contains its own conversation and **Execution records** tab. The top toolbar provides peer **Intelligent workspace** and **Terminal** views. In the workspace view, open or collapse the terminal on the right. In the terminal view, open or collapse the assistant on the right. The secondary panel is always docked to the right; there is no bottom dock. Collapsing a panel, switching between the two main views, or switching workspaces keeps live terminals running. **Closing a terminal tab** ends its session.
 
 Use `Ctrl/Cmd+B` to toggle the sidebar, `Ctrl/Cmd+1` and `Ctrl/Cmd+2` to switch main views, and `Ctrl/Cmd+\`` to toggle the right terminal panel or return from the terminal main view. Workspace names, server associations, and layout preferences persist locally. Each workspace has its own in-memory drafts, conversation, and terminal tabs; restarting the application does not restore these live sessions or conversations.
 
@@ -112,7 +114,7 @@ Changing the model-provider origin clears the previously stored API key unless a
 
 ## Alpha limitations
 
-- No jump hosts, full OpenSSH config import, system OpenSSH backend, port forwarding, or multi-host automation.
+- No system OpenSSH backend, port forwarding, or multi-host automation. Jump-host support covers chained server profiles only; the config importer skips `Match` blocks, `ProxyCommand`, and multi-hop `ProxyJump` lists rather than guessing.
 - No file download/upload/editing, Monaco Diff, or remote configuration rollback yet; the file panel is read-only directory browsing.
 - No durable remote-session recovery. Disconnecting SSH closes the session; reconnecting does not restore its shell. No automatic retries for command execution.
 - Closing an `exec` channel on timeout/disconnect does not guarantee the remote process is terminated. Check the server before retrying.

@@ -47,6 +47,46 @@ export function findExecutable(name: string): string | undefined {
     join(homedir(), ".npm-global", "bin"),
     "/opt/homebrew/bin",
     "/usr/local/bin",
+    ...(process.platform === "win32"
+      ? [
+          join(
+            homedir(),
+            "AppData",
+            "Roaming",
+            "npm",
+            "node_modules",
+            "@openai",
+            "codex",
+            "node_modules",
+            "@openai",
+            "codex-win32-x64",
+            "vendor",
+            "x86_64-pc-windows-msvc",
+            "bin",
+          ),
+          join(
+            homedir(),
+            "AppData",
+            "Roaming",
+            "npm",
+            "node_modules",
+            "@openai",
+            "codex-win32-x64",
+            "vendor",
+            "x86_64-pc-windows-msvc",
+            "bin",
+          ),
+          join(
+            homedir(),
+            "AppData",
+            "Local",
+            "Programs",
+            "Codex",
+            "resources",
+            "bin",
+          ),
+        ]
+      : []),
   ];
   // Prefer a native executable across all locations before a Windows shell shim.
   for (const ext of extensions)
@@ -89,9 +129,14 @@ export function cliArguments(
     policy,
     prompt === undefined,
   );
-  if (prompt === undefined) return [...permissions, ...selected];
+  if (prompt === undefined) {
+    return input.engine === "codex"
+      ? ["--no-daemon", ...permissions, ...selected]
+      : [...permissions, ...selected];
+  }
   return input.engine === "codex"
     ? [
+        "--no-daemon",
         ...permissions,
         "exec",
         ...(nativeId ? ["resume"] : []),

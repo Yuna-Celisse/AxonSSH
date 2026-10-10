@@ -7,6 +7,8 @@ Server profiles, host-key verification, local/SSH terminal tabs, directory listi
 ## 0.2 — reliable daily SSH
 
 - Jump-host chains and commonly used OpenSSH config import.
+  - Landed: chained server profiles over direct-tcpip forwarding, plus `~/.ssh/config` import that follows `Include` files and reports entries it cannot represent.
+  - Remaining: `Match` conditions, `ProxyCommand`, multi-hop `ProxyJump` lists, and importer coverage for less common keywords.
 - Optional system OpenSSH compatibility backend, including hardware-backed identities.
 - Per-terminal connection state, explicit reconnect, and optional tmux attachment.
 - SFTP downloads/uploads, conflict detection, remote text editing and Diff review.

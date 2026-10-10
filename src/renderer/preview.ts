@@ -98,6 +98,8 @@ if (isPreview) {
       },
       connect: desktopOnly,
       disconnect: desktopOnly,
+      importOpenSshConfig: desktopOnly,
+      contextMenu: async () => undefined,
     },
     terminal: {
       open: desktopOnly,

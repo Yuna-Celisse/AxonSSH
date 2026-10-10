@@ -9,6 +9,7 @@ import {
 } from "electron";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
+import { userInfo } from "node:os";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Store } from "./store";
@@ -30,6 +31,8 @@ import type { AppEvent } from "../shared/types";
 import { cliArguments } from "./cli";
 import { localDiagnostics } from "./modes";
 import { executeLocal } from "./local-command";
+import { loadDefaultSshConfig, parseOpenSshConfig } from "./ssh-config";
+import type { Server } from "../shared/types";
 
 let window: BrowserWindow | undefined;
 let store: Store,
@@ -200,6 +203,7 @@ function registerIPC() {
       ssh.disconnect(parsed.id);
       approvals.revokeServer(parsed.id);
     }
+    store.assertJumpTarget(parsed.id, parsed.jumpServerId);
     return store.saveServer(parsed);
   });
   handle("servers:remove", (id) => {
@@ -214,6 +218,137 @@ function registerIPC() {
     idSchema.parse(id);
     approvals.revokeServer(id);
     ssh.disconnect(id);
+  });
+  handle("servers:context-menu", (id, options?: { isConnected?: boolean }) => {
+    const parsedId = idSchema.parse(id);
+    const server = store.server(parsedId);
+    const isConnected =
+      options?.isConnected ?? ssh.connectedIds().includes(parsedId);
+    return new Promise<string | undefined>((resolve) => {
+      const menu = Menu.buildFromTemplate([
+        {
+          label: isConnected ? "断开连接" : "连接服务器",
+          click: () => resolve(isConnected ? "disconnect" : "connect"),
+        },
+        {
+          label: "打开终端",
+          click: () => resolve("open-terminal"),
+        },
+        {
+          label: "浏览远程文件",
+          click: () => resolve("open-files"),
+        },
+        { type: "separator" },
+        {
+          label: "编辑服务器配置",
+          click: () => resolve("edit"),
+        },
+        {
+          label: "复制 SSH 连接命令",
+          click: () => resolve("copy-ssh-command"),
+        },
+        { type: "separator" },
+        {
+          label: `删除服务器（${server.name}）`,
+          click: () => resolve("delete"),
+        },
+      ]);
+      menu.popup({ window: window!, callback: () => resolve(undefined) });
+    });
+  });
+  handle("servers:import-ssh-config", () => {
+    const raw = loadDefaultSshConfig();
+    if (!raw) {
+      throw new Error("未在 ~/.ssh/config 中找到可用配置文件");
+    }
+    let localUser: string | undefined;
+    try {
+      localUser = userInfo().username || undefined;
+    } catch {
+      localUser = undefined;
+    }
+    const entries = parseOpenSshConfig(raw, { defaultUser: localUser });
+    if (!entries.length) {
+      throw new Error("~/.ssh/config 中未解析到有效的 Host 配置");
+    }
+    const existing = store.listServers();
+    const aliasToId = new Map(
+      existing.map((server) => [server.name, server.id]),
+    );
+    const existingNames = new Set(existing.map((server) => server.name));
+
+    // Reject what cannot be represented before creating any profile, so a host
+    // behind an unusable jump never lands as a silently direct-connect entry.
+    const reasons = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.proxyCommand) {
+        reasons.set(entry.alias, "ProxyCommand 暂不支持，请手动配置代理");
+      } else if (entry.proxyJump?.includes(",")) {
+        reasons.set(entry.alias, "多级 ProxyJump 列表暂不支持");
+      }
+    }
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const entry of entries) {
+        if (!entry.proxyJump || reasons.has(entry.alias)) continue;
+        const target = entry.proxyJump;
+        const resolvable =
+          (importable(target) && !reasons.has(target)) ||
+          existingNames.has(target);
+        if (!resolvable) {
+          reasons.set(entry.alias, `跳板机 ${target} 未能导入`);
+          changed = true;
+        }
+      }
+    }
+    function importable(alias: string) {
+      return entries.some(
+        (entry) => entry.alias === alias && !entry.proxyCommand,
+      );
+    }
+
+    const created = new Map<string, Server>();
+    const skipped: { alias: string; reason: string }[] = [];
+    for (const entry of entries) {
+      const reason = reasons.get(entry.alias);
+      if (reason) {
+        skipped.push({ alias: entry.alias, reason });
+        continue;
+      }
+      const found = existing.find(
+        (server) =>
+          server.host === entry.host &&
+          server.port === entry.port &&
+          server.username === entry.username,
+      );
+      // Re-importing must not discard a jump host chosen in the UI.
+      const server = store.saveServer({
+        id: found?.id,
+        name: entry.alias,
+        host: entry.host,
+        port: entry.port,
+        username: entry.username,
+        group: "OpenSSH 导入",
+        authType: entry.authType,
+        privateKeyPath: entry.privateKeyPath,
+        jumpServerId: found?.jumpServerId,
+      });
+      created.set(entry.alias, server);
+      aliasToId.set(entry.alias, server.id);
+    }
+    for (const entry of entries) {
+      const server = created.get(entry.alias);
+      if (!server || !entry.proxyJump) continue;
+      const jumpId = aliasToId.get(entry.proxyJump);
+      if (!jumpId || jumpId === server.id) continue;
+      store.assertJumpTarget(server.id, jumpId);
+      const { hasSecret: _secret, fingerprint: _pin, ...profile } = server;
+      created.set(
+        entry.alias,
+        store.saveServer({ ...profile, jumpServerId: jumpId }),
+      );
+    }
+    return { imported: [...created.values()], count: created.size, skipped };
   });
   handle("terminal:open", (id, sessionId) => {
     if (sessionId !== undefined) store.session(idSchema.parse(sessionId));

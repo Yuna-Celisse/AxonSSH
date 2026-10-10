@@ -368,6 +368,34 @@ describe("local SQLite and credential separation", () => {
     expect(store.server(server.id).fingerprint).toBeUndefined();
     store.close();
   });
+  it("refuses to delete a server still referenced as a jump host", async () => {
+    const { store } = await open();
+    const relay = store.saveServer({ ...input, name: "relay" });
+    const web = store.saveServer({
+      ...input,
+      name: "web",
+      jumpServerId: relay.id,
+    });
+    expect(store.jumpDependents(relay.id).map((s) => s.id)).toEqual([web.id]);
+    expect(() => store.removeServer(relay.id)).toThrow(/web/);
+    expect(store.server(relay.id).name).toBe("relay");
+    store.saveServer({ ...input, id: web.id, name: "web" });
+    expect(store.server(web.id).jumpServerId).toBeUndefined();
+    store.removeServer(relay.id);
+    expect(() => store.server(relay.id)).toThrow(/服务器不存在/);
+    store.close();
+  });
+  it("rejects jump targets that are missing or form a cycle", async () => {
+    const { store } = await open();
+    const a = store.saveServer({ ...input, name: "a" });
+    const b = store.saveServer({ ...input, name: "b", jumpServerId: a.id });
+    expect(() => store.assertJumpTarget(b.id, "absent-id")).toThrow(
+      /服务器不存在/,
+    );
+    expect(() => store.assertJumpTarget(a.id, b.id)).toThrow(/循环/);
+    expect(() => store.assertJumpTarget(b.id, a.id)).not.toThrow();
+    store.close();
+  });
   it("never carries an API key to another provider origin", async () => {
     const { store } = await open();
     store.saveSettings({

@@ -11,7 +11,9 @@ import {
   ChevronRight,
   Circle,
   Command,
+  Copy,
   Cpu,
+  Download,
   Folder,
   FolderOpen,
   Globe,
@@ -72,6 +74,7 @@ type Tab = {
   id: string;
   title: string;
   workspaceId: string;
+  type?: "terminal" | "files" | "activity" | "handoff";
   serverId?: string;
   closed?: boolean;
 };
@@ -98,6 +101,68 @@ export default function App() {
       ),
     }));
   }
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("axonssh.sidebar-width");
+    return saved ? Math.max(180, Math.min(480, Number(saved))) : 244;
+  });
+  const [rightPanelWidth, setRightPanelWidth] = useState<number>(() => {
+    const saved = localStorage.getItem("axonssh.right-panel-width");
+    return saved ? Math.max(260, Math.min(900, Number(saved))) : 380;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isResizingRight, setIsResizingRight] = useState(false);
+
+  const sidebarWidthRef = useRef(sidebarWidth);
+  sidebarWidthRef.current = sidebarWidth;
+  const rightPanelWidthRef = useRef(rightPanelWidth);
+  rightPanelWidthRef.current = rightPanelWidth;
+
+  useEffect(() => {
+    if (!isResizingSidebar) return;
+    const onMouseMove = (e: MouseEvent) => {
+      const max = Math.floor(window.innerWidth * 0.45);
+      const next = Math.max(180, Math.min(max, e.clientX));
+      sidebarWidthRef.current = next;
+      setSidebarWidth(next);
+    };
+    const onMouseUp = () => {
+      setIsResizingSidebar(false);
+      localStorage.setItem(
+        "axonssh.sidebar-width",
+        String(sidebarWidthRef.current),
+      );
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [isResizingSidebar]);
+
+  useEffect(() => {
+    if (!isResizingRight) return;
+    const onMouseMove = (e: MouseEvent) => {
+      const max = Math.floor(window.innerWidth * 0.75);
+      const next = Math.max(260, Math.min(max, window.innerWidth - e.clientX));
+      rightPanelWidthRef.current = next;
+      setRightPanelWidth(next);
+    };
+    const onMouseUp = () => {
+      setIsResizingRight(false);
+      localStorage.setItem(
+        "axonssh.right-panel-width",
+        String(rightPanelWidthRef.current),
+      );
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [isResizingRight]);
+
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [editingProject, setEditingProject] = useState<Project>();
@@ -182,6 +247,32 @@ export default function App() {
     [results, setResults] = useState<Record<string, CommandResult>>({});
   const scrollEnd = useRef<HTMLDivElement>(null);
   const selectedServer = servers.find((s) => s.id === selected);
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const [contextMenuServer, setContextMenuServer] = useState<{
+    server: Server;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!showAddMenu) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (
+        addMenuRef.current &&
+        !addMenuRef.current.contains(e.target as Node)
+      ) {
+        setShowAddMenu(false);
+      }
+    };
+    window.addEventListener("mousedown", onClickOutside);
+    return () => window.removeEventListener("mousedown", onClickOutside);
+  }, [showAddMenu]);
+
+  const currentActiveTab = workspaceTabs.find((t) => t.id === activeTab);
+  const hasRightPanel =
+    (view === "workspace" && terminalOpen) ||
+    (view === "terminal" && agentOpen);
   const report = (e: unknown) => setError(errorText(e));
   const reload = async () => setServers(await window.axon.servers.list());
   function mergeSession(next: Session) {
@@ -392,6 +483,9 @@ export default function App() {
         event.preventDefault();
         setModal("settings");
       }
+      if (event.key === "Escape") {
+        setContextMenuServer(null);
+      }
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
@@ -504,26 +598,190 @@ export default function App() {
   }
   async function closeTab(tab: Tab) {
     try {
-      if (!tab.closed) await window.axon.terminal.close(tab.id);
-      forgetTerminal(tab.id);
+      if (!tab.closed && (!tab.type || tab.type === "terminal")) {
+        await window.axon.terminal.close(tab.id);
+        forgetTerminal(tab.id);
+      }
       setTabs((current) => current.filter((t) => t.id !== tab.id));
-      if (activeTab === tab.id)
-        setActiveTab(workspaceTabs.find((t) => t.id !== tab.id)?.id);
+      if (activeTab === tab.id) {
+        const remaining = workspaceTabs.filter((t) => t.id !== tab.id);
+        setActiveTab(
+          remaining.length ? remaining[remaining.length - 1].id : undefined,
+        );
+      }
+    } catch (e) {
+      report(e);
+    }
+  }
+  async function openFilesTab(server?: Server) {
+    const target = server ?? selectedServer;
+    if (!target) return;
+    try {
+      await window.axon.servers.connect(target.id);
+      const existing = workspaceTabs.find(
+        (t) => t.type === "files" && t.serverId === target.id,
+      );
+      if (existing) {
+        setActiveTab(existing.id);
+      } else {
+        const id = `files-${target.id}-${Date.now()}`;
+        setTabs((current) => [
+          ...current,
+          {
+            id,
+            title: `文件: ${target.name}`,
+            type: "files",
+            serverId: target.id,
+            workspaceId: workspace.id,
+          },
+        ]);
+        setActiveTab(id);
+      }
+      updateWorkspace({ terminalOpen: true });
+      setFiles(await window.axon.remote.files(target.id, filePath));
+      await reload();
+    } catch (e) {
+      report(e);
+    }
+  }
+  function openActivityTab() {
+    const existing = workspaceTabs.find((t) => t.type === "activity");
+    if (existing) {
+      setActiveTab(existing.id);
+    } else {
+      const id = `activity-${Date.now()}`;
+      setTabs((current) => [
+        ...current,
+        {
+          id,
+          title: "执行记录",
+          type: "activity",
+          workspaceId: workspace.id,
+        },
+      ]);
+      setActiveTab(id);
+    }
+    updateWorkspace({ terminalOpen: true });
+  }
+  function openHandoffTab() {
+    const existing = workspaceTabs.find((t) => t.type === "handoff");
+    if (existing) {
+      setActiveTab(existing.id);
+    } else {
+      const id = `handoff-${Date.now()}`;
+      setTabs((current) => [
+        ...current,
+        {
+          id,
+          title: "交接记录",
+          type: "handoff",
+          workspaceId: workspace.id,
+        },
+      ]);
+      setActiveTab(id);
+    }
+    updateWorkspace({ terminalOpen: true });
+  }
+  async function disconnectServer(target: Server) {
+    try {
+      await window.axon.servers.disconnect(target.id);
+      setConnected((current) => {
+        const next = new Set(current);
+        next.delete(target.id);
+        return next;
+      });
     } catch (e) {
       report(e);
     }
   }
   async function disconnect() {
     if (!selected) return;
+    const server = servers.find((s) => s.id === selected);
+    if (server) await disconnectServer(server);
+  }
+  async function removeServer(target: Server) {
+    if (!confirm(`确定要删除服务器“${target.name}”？`)) return;
     try {
-      await window.axon.servers.disconnect(selected);
+      await window.axon.servers.remove(target.id);
+      updateWorkspace({
+        serverIds: workspace.serverIds.filter((id) => id !== target.id),
+      });
       setConnected((current) => {
         const next = new Set(current);
-        next.delete(selected);
+        next.delete(target.id);
         return next;
       });
+      if (selected === target.id) {
+        setSelected(undefined);
+      }
+      if (session && session.serverId === target.id) {
+        void window.axon.sessions
+          .update(session.id, { serverId: null })
+          .then(mergeSession)
+          .catch(report);
+      }
+      const toClose = workspaceTabs.filter((t) => t.serverId === target.id);
+      for (const tab of toClose) {
+        void closeTab(tab);
+      }
+      await reload();
     } catch (e) {
       report(e);
+    }
+  }
+  async function copySshCommand(target: Server) {
+    try {
+      const keyFlag =
+        target.authType === "key" && target.privateKeyPath
+          ? ` -i "${target.privateKeyPath}"`
+          : "";
+      const portFlag =
+        target.port && target.port !== 22 ? ` -p ${target.port}` : "";
+      const cmd = `ssh${keyFlag}${portFlag} ${target.username}@${target.host}`;
+      await navigator.clipboard.writeText(cmd);
+    } catch (e) {
+      report(e);
+    }
+  }
+  async function handleServerAction(target: Server, action: string) {
+    if (action === "connect") {
+      await connectServer(target);
+    } else if (action === "disconnect") {
+      await disconnectServer(target);
+    } else if (action === "open-terminal") {
+      await openTerminal(target);
+    } else if (action === "open-files") {
+      await openFilesTab(target);
+    } else if (action === "edit") {
+      setEditing(target);
+      setModal("server");
+    } else if (action === "copy-ssh-command") {
+      await copySshCommand(target);
+    } else if (action === "delete") {
+      await removeServer(target);
+    }
+  }
+  async function serverContextMenu(
+    target: Server,
+    event?: { clientX: number; clientY: number },
+  ) {
+    if (typeof window.axon?.servers?.contextMenu === "function") {
+      try {
+        const isConnected = connected.has(target.id);
+        const action = await window.axon.servers.contextMenu(target.id, {
+          isConnected,
+        });
+        if (!action) return;
+        await handleServerAction(target, action);
+        return;
+      } catch {
+        // Fall back to React context menu if Electron popup fails
+      }
+    }
+    if (event) {
+      const x = Math.min(event.clientX, window.innerWidth - 220);
+      const y = Math.min(event.clientY, window.innerHeight - 260);
+      setContextMenuServer({ server: target, x, y });
     }
   }
   async function send(event: FormEvent) {
@@ -619,8 +877,6 @@ export default function App() {
       await window.axon.servers.connect(selected);
       setFiles(await window.axon.remote.files(selected, path));
       setFilePath(path);
-      setShowFiles(true);
-      if (view === "terminal") updateWorkspace({ agentOpen: true });
       await reload();
     } catch (e) {
       report(e);
@@ -647,7 +903,19 @@ export default function App() {
   const groups = [...new Set(visibleServers.map((s) => s.group || "未分组"))];
   return (
     <div className="app-shell">
-      <aside className="sidebar" hidden={workspaceState.sidebarCollapsed}>
+      <aside
+        className="sidebar"
+        hidden={workspaceState.sidebarCollapsed}
+        style={{ width: sidebarWidth }}
+      >
+        <div
+          className={`sidebar-resizer ${isResizingSidebar ? "resizing" : ""}`}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setIsResizingSidebar(true);
+          }}
+          title="拖拽调节导航栏宽度"
+        />
         <div className="brand">
           <div className="brand-mark">
             <Command size={21} />
@@ -725,9 +993,30 @@ export default function App() {
                   <button
                     key={server.id}
                     className={`server-row ${selected === server.id ? "selected" : ""}`}
+                    title={`${server.name} (${server.username}@${server.host}:${server.port}) · 右键查看更多操作`}
                     onClick={() => {
                       setSelected(server.id);
                       if (view === "activity") setView("workspace");
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      void serverContextMenu(server, {
+                        clientX: e.clientX,
+                        clientY: e.clientY,
+                      });
+                    }}
+                    onKeyDown={(e) => {
+                      if (
+                        e.key === "ContextMenu" ||
+                        (e.shiftKey && e.key === "F10")
+                      ) {
+                        e.preventDefault();
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        void serverContextMenu(server, {
+                          clientX: rect.right,
+                          clientY: rect.top,
+                        });
+                      }
                     }}
                   >
                     <ServerIcon size={16} />
@@ -847,32 +1136,33 @@ export default function App() {
               </button>
             </div>
             {view === "workspace" && modal !== "settings" && (
-              <>
-                <button
-                  className="icon-button panel-toggle"
-                  aria-label="右侧终端"
-                  title="右侧终端"
-                  aria-pressed={terminalOpen}
-                  onClick={() =>
-                    updateWorkspace({
-                      terminalOpen: !terminalOpen,
-                    })
-                  }
-                >
-                  <PanelRight size={18} />
-                </button>
-              </>
+              <button
+                className={`icon-button panel-toggle ${terminalOpen ? "active" : ""}`}
+                aria-label="右侧工作区"
+                title={
+                  terminalOpen
+                    ? "收起右侧工作区"
+                    : "展开右侧工作区 (终端 / 文件 / 记录)"
+                }
+                aria-pressed={terminalOpen}
+                onClick={() => updateWorkspace({ terminalOpen: !terminalOpen })}
+              >
+                <PanelRight size={18} />
+              </button>
             )}
             {view === "terminal" && modal !== "settings" && (
               <button
-                className="text-button panel-toggle"
-                aria-label="右侧智能体"
+                className={`icon-button panel-toggle ${agentOpen ? "active" : ""}`}
+                aria-label="智能体侧边栏"
+                title={
+                  agentOpen
+                    ? "收起智能体侧边栏"
+                    : "展开智能体侧边栏 (对话与分析)"
+                }
                 aria-pressed={agentOpen}
                 onClick={() => updateWorkspace({ agentOpen: !agentOpen })}
               >
-                <Bot size={16} />
-                智能体
-                <PanelRight size={16} />
+                <Bot size={18} />
               </button>
             )}
             {isPreview && <span className="badge warning">浏览器界面预览</span>}
@@ -995,8 +1285,6 @@ export default function App() {
                 onClick={() => {
                   if (view === "activity" || view === "handoff")
                     setView("workspace");
-                  else if (view === "terminal")
-                    updateWorkspace({ agentOpen: true });
                 }}
               >
                 <MessageSquare size={14} />
@@ -1091,14 +1379,39 @@ export default function App() {
           />
         )}
         <div
-          className={`workspace-layout view-${view} dock-right ${terminalOpen ? "terminal-open" : ""} ${agentOpen ? "agent-open" : ""}`}
+          className={`workspace-layout view-${view} dock-right ${terminalOpen ? "terminal-open" : ""} ${agentOpen ? "agent-open" : ""} ${showFiles ? "files-open" : ""}`}
+          style={
+            hasRightPanel
+              ? { gridTemplateColumns: `minmax(0, 1fr) ${rightPanelWidth}px` }
+              : undefined
+          }
           hidden={
             view === "activity" || view === "handoff" || modal === "settings"
           }
         >
+          {hasRightPanel && (
+            <div
+              className={`panel-resizer ${isResizingRight ? "resizing" : ""}`}
+              style={{ right: rightPanelWidth - 3 }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsResizingRight(true);
+              }}
+              title="拖拽调节侧边栏宽度"
+            />
+          )}
           <>
             {selectedServer && (
-              <div className="server-toolbar">
+              <div
+                className="server-toolbar"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  void serverContextMenu(selectedServer, {
+                    clientX: e.clientX,
+                    clientY: e.clientY,
+                  });
+                }}
+              >
                 <div>
                   <ServerIcon size={17} />
                   <strong>{selectedServer.name}</strong>
@@ -1114,8 +1427,8 @@ export default function App() {
                 </div>
                 <div>
                   <button
-                    className="text-button"
-                    onClick={() => loadFiles(filePath)}
+                    className={`text-button ${currentActiveTab?.type === "files" && terminalOpen ? "active" : ""}`}
+                    onClick={() => void openFilesTab(selectedServer)}
                   >
                     <FolderOpen size={14} />
                     文件
@@ -1169,22 +1482,28 @@ export default function App() {
             )}
             <div
               className="work-content"
-              hidden={view === "terminal" && !agentOpen}
+              hidden={view === "terminal" ? !agentOpen : false}
+              style={
+                view === "terminal" && !agentOpen
+                  ? { display: "none" }
+                  : undefined
+              }
             >
+              {view === "terminal" && (
+                <div className="agent-panel-heading">
+                  <Sparkles size={14} />
+                  <strong>智能体对话</strong>
+                  <button
+                    className="icon-button"
+                    title="收起智能体侧边栏"
+                    aria-label="收起智能体侧边栏"
+                    onClick={() => updateWorkspace({ agentOpen: false })}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               <div className="conversation">
-                {view === "terminal" && (
-                  <div className="agent-panel-heading">
-                    <Sparkles size={15} />
-                    <strong>智能体</strong>
-                    <button
-                      className="icon-button"
-                      aria-label="收起智能体面板"
-                      onClick={() => updateWorkspace({ agentOpen: false })}
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                )}
                 {!messages.length ? (
                   <div className="welcome">
                     <div className="section-eyebrow">
@@ -1564,130 +1883,139 @@ export default function App() {
                       : "命令按当前处理位置执行；应用命令仍需确认。"}
                 </div>
               </div>
-              {showFiles && (
-                <aside className="file-panel">
-                  <div className="file-panel-heading">
-                    <FolderOpen size={15} />
-                    远程文件
-                    <button
-                      aria-label="关闭文件面板"
-                      onClick={() => setShowFiles(false)}
-                    >
-                      <X size={15} />
-                    </button>
-                  </div>
-                  <form
-                    className="file-path"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void loadFiles(filePath);
-                    }}
-                  >
-                    <input
-                      aria-label="远程路径"
-                      value={filePath}
-                      onChange={(e) => setFilePath(e.target.value)}
-                    />
-                    <button title="刷新目录">
-                      <ArrowUpRight size={14} />
-                    </button>
-                  </form>
-                  <button
-                    className="parent-folder"
-                    onClick={() => loadFiles(`${filePath}/..`)}
-                  >
-                    <ArrowLeft size={13} />
-                    上一级
-                  </button>
-                  {files.map((file) => (
-                    <button
-                      className="file-row"
-                      key={file.name}
-                      disabled={!file.directory}
-                      onClick={() =>
-                        loadFiles(`${filePath.replace(/\/$/, "")}/${file.name}`)
-                      }
-                    >
-                      {file.directory ? (
-                        <Folder size={14} />
-                      ) : (
-                        <span className="file-dot" />
-                      )}
-                      <span>{file.name}</span>
-                      <small>
-                        {file.directory
-                          ? ""
-                          : `${Math.ceil(file.size / 1024)} KB`}
-                      </small>
-                    </button>
-                  ))}
-                  {!files.length && <p className="muted">目录为空</p>}
-                  <p className="file-panel-note">
-                    初版提供目录浏览；文件编辑与传输将在后续版本加入。
-                  </p>
-                </aside>
-              )}
             </div>
             <section
               className="terminal-section"
-              hidden={view !== "terminal" && !terminalOpen}
+              hidden={view === "workspace" && !terminalOpen}
+              style={
+                view === "workspace" && !terminalOpen
+                  ? { display: "none" }
+                  : undefined
+              }
             >
-              <div className="terminal-toolbar">
-                <div className="terminal-tabs">
-                  <span className="terminal-label">
-                    <TerminalIcon size={14} />
-                    TERMINAL
-                  </span>
-                  {workspaceTabs.map((tab) => (
-                    <div
-                      key={tab.id}
-                      className={`terminal-tab ${tab.id === activeTab ? "active" : ""}`}
-                    >
-                      <button onClick={() => setActiveTab(tab.id)}>
-                        <i
-                          className={
-                            tab.closed ? "status-dot" : "status-dot online"
-                          }
-                        />
-                        {tab.title}
+              <div className="codex-tab-bar">
+                <div className="codex-tabs">
+                  {workspaceTabs.map((tab) => {
+                    const isActive = tab.id === activeTab;
+                    return (
+                      <div
+                        key={tab.id}
+                        className={`codex-tab ${isActive ? "active" : ""}`}
+                        onClick={() => setActiveTab(tab.id)}
+                        title={tab.title}
+                      >
+                        <span className="codex-tab-icon">
+                          {tab.type === "files" ? (
+                            <FolderOpen size={13} />
+                          ) : tab.type === "activity" ? (
+                            <ActivityIcon size={13} />
+                          ) : tab.type === "handoff" ? (
+                            <ArrowRightLeft size={13} />
+                          ) : (
+                            <TerminalIcon size={13} />
+                          )}
+                        </span>
+                        <span className="codex-tab-title">{tab.title}</span>
+                        <button
+                          className="codex-tab-close"
+                          aria-label={`关闭 ${tab.title}`}
+                          title="关闭标签页"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void closeTab(tab);
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="codex-tab-add-wrapper" ref={addMenuRef}>
+                  <button
+                    className="codex-tab-add-btn"
+                    title="新建标签页"
+                    aria-label="新建标签页"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAddMenu((prev) => !prev);
+                    }}
+                  >
+                    <Plus size={14} />
+                  </button>
+                  {showAddMenu && (
+                    <div className="codex-add-menu">
+                      <button
+                        onClick={() => {
+                          setShowAddMenu(false);
+                          void openTerminal();
+                        }}
+                      >
+                        <TerminalIcon size={14} />
+                        <span>新建本地终端</span>
+                        <kbd>Ctrl+`</kbd>
+                      </button>
+                      {selectedServer && (
+                        <button
+                          onClick={() => {
+                            setShowAddMenu(false);
+                            void openTerminal(selectedServer);
+                          }}
+                        >
+                          <ServerIcon size={14} />
+                          <span>终端: {selectedServer.name}</span>
+                        </button>
+                      )}
+                      {selectedServer && (
+                        <button
+                          onClick={() => {
+                            setShowAddMenu(false);
+                            void openFilesTab(selectedServer);
+                          }}
+                        >
+                          <FolderOpen size={14} />
+                          <span>远程文件: {selectedServer.name}</span>
+                          <kbd>Ctrl+P</kbd>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setShowAddMenu(false);
+                          openActivityTab();
+                        }}
+                      >
+                        <ActivityIcon size={14} />
+                        <span>执行记录</span>
                       </button>
                       <button
-                        aria-label={`关闭 ${tab.title}`}
-                        onClick={() => closeTab(tab)}
+                        onClick={() => {
+                          setShowAddMenu(false);
+                          openHandoffTab();
+                        }}
                       >
-                        <X size={12} />
+                        <ArrowRightLeft size={14} />
+                        <span>交接记录</span>
                       </button>
                     </div>
-                  ))}
-                  <button
-                    className="icon-button"
-                    aria-label="新建本地终端"
-                    title="新建本地终端"
-                    onClick={() => openTerminal()}
-                  >
-                    <Plus size={15} />
-                  </button>
-                </div>
-                <div className="terminal-tools">
-                  {workspaceTabs.length > 0 && (
-                    <label>
-                      <Search size={13} />
-                      <input
-                        aria-label="搜索终端输出"
-                        placeholder="查找"
-                        value={terminalSearch}
-                        onChange={(e) => setTerminalSearch(e.target.value)}
-                      />
-                    </label>
                   )}
+                </div>
+                <div className="codex-tab-actions">
+                  {(!currentActiveTab ||
+                    !currentActiveTab.type ||
+                    currentActiveTab.type === "terminal") &&
+                    workspaceTabs.length > 0 && (
+                      <label className="codex-tab-search">
+                        <Search size={12} />
+                        <input
+                          placeholder="查找"
+                          value={terminalSearch}
+                          onChange={(e) => setTerminalSearch(e.target.value)}
+                        />
+                      </label>
+                    )}
                   <button
                     className="icon-button"
-                    aria-label={
-                      view === "terminal" ? "返回智能工作台" : "终端作为主视图"
-                    }
-                    title={
-                      view === "terminal" ? "返回智能工作台" : "终端作为主视图"
-                    }
+                    title={view === "terminal" ? "返回工作台" : "终端主视图"}
                     onClick={() =>
                       setView(view === "terminal" ? "workspace" : "terminal")
                     }
@@ -1695,58 +2023,179 @@ export default function App() {
                     <ArrowUpRight size={14} />
                   </button>
                   {view === "workspace" && (
-                    <>
-                      <button
-                        className="icon-button"
-                        aria-label="收起终端面板"
-                        title="收起终端面板"
-                        onClick={() => updateWorkspace({ terminalOpen: false })}
-                      >
-                        <X size={16} />
-                      </button>
-                    </>
+                    <button
+                      className="icon-button"
+                      title="收起右侧面板"
+                      onClick={() => updateWorkspace({ terminalOpen: false })}
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
+                  {view === "terminal" && (
+                    <button
+                      className={`icon-button ${agentOpen ? "active" : ""}`}
+                      title={
+                        agentOpen ? "收起智能体侧边栏" : "展开智能体侧边栏"
+                      }
+                      aria-pressed={agentOpen}
+                      onClick={() => updateWorkspace({ agentOpen: !agentOpen })}
+                    >
+                      <Bot size={15} />
+                    </button>
                   )}
                 </div>
               </div>
-              <div className="terminal-body">
-                {tabs.map((tab) => (
-                  <TerminalPane
-                    key={tab.id}
-                    id={tab.id}
-                    active={
-                      tab.workspaceId === workspace.id &&
-                      tab.id === activeTab &&
-                      view !== "activity" &&
-                      view !== "handoff" &&
-                      modal !== "settings" &&
-                      (view === "terminal" || terminalOpen)
-                    }
-                    search={terminalSearch}
+
+              <div className="codex-tab-body">
+                {workspaceTabs
+                  .filter((t) => !t.type || t.type === "terminal")
+                  .map((tab) => (
+                    <TerminalPane
+                      key={tab.id}
+                      id={tab.id}
+                      active={
+                        tab.id === activeTab &&
+                        view !== "activity" &&
+                        view !== "handoff" &&
+                        modal !== "settings" &&
+                        (view === "terminal" || terminalOpen)
+                      }
+                      search={terminalSearch}
+                    />
+                  ))}
+
+                {currentActiveTab?.type === "files" && (
+                  <FilePanel
+                    files={files}
+                    filePath={filePath}
+                    setFilePath={setFilePath}
+                    loadFiles={loadFiles}
+                    showHeader={false}
                   />
-                ))}
+                )}
+
+                {currentActiveTab?.type === "activity" && (
+                  <div className="activity-view inside-tab">
+                    <div className="section-eyebrow">OPERATIONS</div>
+                    <h2>{session?.title} · 执行记录</h2>
+                    {!activity.length ? (
+                      <div className="empty-record">
+                        <ActivityIcon size={28} />
+                        <h3>暂无执行记录</h3>
+                        <p>在此会话执行命令后，记录会显示在对应服务器。</p>
+                      </div>
+                    ) : (
+                      <div className="activity-table">
+                        <div className="activity-row table-heading">
+                          <span>状态</span>
+                          <span>命令</span>
+                          <span>执行耗时</span>
+                          <span>时间</span>
+                        </div>
+                        {activity.map((item) => (
+                          <div className="activity-row" key={item.id}>
+                            <span>
+                              <i
+                                className={
+                                  item.code === 0
+                                    ? "status-dot online"
+                                    : "status-dot error"
+                                }
+                              />
+                              {item.code === 0 ? "成功" : `退出码 ${item.code}`}
+                            </span>
+                            <code>{item.command}</code>
+                            <span>{item.durationMs}ms</span>
+                            <span>
+                              {new Date(item.createdAt).toLocaleTimeString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {currentActiveTab?.type === "handoff" && session && (
+                  <div className="handoff-view inside-tab">
+                    <HandoffPanel
+                      session={session}
+                      engine={engine}
+                      busy={!!taskId}
+                      reset={() => {
+                        void window.axon.agent
+                          .resetNative(
+                            session.id,
+                            engine,
+                            selected,
+                            session.agentOptions?.[engine]?.model,
+                          )
+                          .then(mergeSession)
+                          .catch(report);
+                      }}
+                    />
+                  </div>
+                )}
+
                 {!workspaceTabs.length && (
-                  <div className="terminal-empty">
-                    <TerminalIcon size={24} />
-                    <div>
-                      <strong>准备好连接了。</strong>
-                      <p>打开本地终端，或选择服务器开始 SSH 会话。</p>
+                  <div className="codex-tab-empty">
+                    <div className="codex-empty-card">
+                      <div className="codex-empty-icon">
+                        <FolderOpen size={24} />
+                      </div>
+                      <h3>打开或新建标签页</h3>
+                      <p>从上方点击 + 或在左侧服务器列表中选择操作。</p>
+                      <div className="codex-empty-actions">
+                        <button
+                          className="primary-button"
+                          onClick={() => void openTerminal()}
+                        >
+                          <TerminalIcon size={14} /> 新建本地终端
+                        </button>
+                        {selectedServer && (
+                          <button
+                            className="secondary-button"
+                            onClick={() => void openTerminal(selectedServer)}
+                          >
+                            <ServerIcon size={14} /> 连接 {selectedServer.name}
+                          </button>
+                        )}
+                        {selectedServer && (
+                          <button
+                            className="secondary-button"
+                            onClick={() => void openFilesTab(selectedServer)}
+                          >
+                            <FolderOpen size={14} /> 浏览远程文件
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <button onClick={() => openTerminal()}>
-                      新建终端 <Plus size={13} />
-                    </button>
                   </div>
                 )}
               </div>
-              <div className="terminal-status">
-                <span>
-                  <i className="status-dot online" />
-                  {workspaceTabs.filter((t) => !t.closed).length} 个活跃终端
-                </span>
-                <span>
-                  UTF-8<span className="status-separator">·</span>xterm-256color
-                  <span className="status-separator">·</span>v{version}
-                </span>
-              </div>
+
+              {(!currentActiveTab ||
+                !currentActiveTab.type ||
+                currentActiveTab.type === "terminal") &&
+                workspaceTabs.length > 0 && (
+                  <div className="terminal-status">
+                    <span>
+                      <i className="status-dot online" />
+                      {
+                        workspaceTabs.filter(
+                          (t) =>
+                            (!t.type || t.type === "terminal") && !t.closed,
+                        ).length
+                      }{" "}
+                      个活跃终端
+                    </span>
+                    <span>
+                      UTF-8<span className="status-separator">·</span>
+                      xterm-256color
+                      <span className="status-separator">·</span>v{version}
+                    </span>
+                  </div>
+                )}
             </section>
           </>
         </div>
@@ -1754,7 +2203,23 @@ export default function App() {
       {modal === "server" && (
         <ServerModal
           server={editing}
+          servers={servers}
           close={() => setModal(null)}
+          onImport={async () => {
+            const { imported, skipped } =
+              await window.axon.servers.importOpenSshConfig();
+            updateWorkspace({
+              serverIds: [
+                ...new Set([
+                  ...workspace.serverIds,
+                  ...imported.map((s) => s.id),
+                ]),
+              ],
+            });
+            await reload();
+            if (!skipped.length) setModal(null);
+            return skipped;
+          }}
           save={async (input) => {
             const server = await window.axon.servers.save(input);
             updateWorkspace({
@@ -1770,6 +2235,105 @@ export default function App() {
             setModal(null);
           }}
         />
+      )}
+      {contextMenuServer && (
+        <div
+          className="context-menu-backdrop"
+          onClick={() => setContextMenuServer(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setContextMenuServer(null);
+          }}
+        >
+          <div
+            className="context-menu"
+            style={{
+              top: contextMenuServer.y,
+              left: contextMenuServer.x,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="context-menu-header">
+              <ServerIcon size={13} />
+              <span>{contextMenuServer.server.name}</span>
+            </div>
+            <div className="context-menu-divider" />
+            <button
+              onClick={() => {
+                const s = contextMenuServer.server;
+                setContextMenuServer(null);
+                if (connected.has(s.id)) void disconnectServer(s);
+                else void connectServer(s);
+              }}
+            >
+              {connected.has(contextMenuServer.server.id) ? (
+                <>
+                  <Unplug size={14} />
+                  <span>断开连接</span>
+                </>
+              ) : (
+                <>
+                  <ServerIcon size={14} />
+                  <span>连接服务器</span>
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => {
+                const s = contextMenuServer.server;
+                setContextMenuServer(null);
+                void openTerminal(s);
+              }}
+            >
+              <TerminalIcon size={14} />
+              <span>打开终端</span>
+            </button>
+            <button
+              onClick={() => {
+                const s = contextMenuServer.server;
+                setContextMenuServer(null);
+                void openFilesTab(s);
+              }}
+            >
+              <FolderOpen size={14} />
+              <span>浏览远程文件</span>
+            </button>
+            <div className="context-menu-divider" />
+            <button
+              onClick={() => {
+                const s = contextMenuServer.server;
+                setContextMenuServer(null);
+                setEditing(s);
+                setModal("server");
+              }}
+            >
+              <Pencil size={14} />
+              <span>编辑服务器配置</span>
+            </button>
+            <button
+              onClick={() => {
+                const s = contextMenuServer.server;
+                setContextMenuServer(null);
+                void copySshCommand(s);
+              }}
+            >
+              <Copy size={14} />
+              <span>复制 SSH 连接命令</span>
+            </button>
+            <div className="context-menu-divider" />
+            <button
+              className="danger"
+              onClick={() => {
+                const s = contextMenuServer.server;
+                setContextMenuServer(null);
+                void removeServer(s);
+              }}
+            >
+              <Trash2 size={14} />
+              <span>删除服务器</span>
+            </button>
+          </div>
+        </div>
       )}
       {modal === "project" && (
         <ProjectModal
@@ -1808,6 +2372,17 @@ export default function App() {
             setQuery("");
             setError("");
             setModal(null);
+          }}
+        />
+      )}
+      {(isResizingSidebar || isResizingRight) && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 99999,
+            cursor: "col-resize",
+            userSelect: "none",
           }}
         />
       )}
@@ -1894,16 +2469,101 @@ function WorkspaceModal({
   );
 }
 
+function FilePanel({
+  files,
+  filePath,
+  setFilePath,
+  loadFiles,
+  showHeader = true,
+  onClose,
+}: {
+  files: FileEntry[];
+  filePath: string;
+  setFilePath: (path: string) => void;
+  loadFiles: (path: string) => Promise<void>;
+  showHeader?: boolean;
+  onClose?: () => void;
+}) {
+  return (
+    <aside className="file-panel">
+      {showHeader && (
+        <div className="file-panel-heading">
+          <FolderOpen size={15} />
+          远程文件
+          {onClose && (
+            <button aria-label="关闭文件面板" onClick={onClose}>
+              <X size={15} />
+            </button>
+          )}
+        </div>
+      )}
+      <form
+        className="file-path"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void loadFiles(filePath);
+        }}
+      >
+        <input
+          aria-label="远程路径"
+          value={filePath}
+          onChange={(e) => setFilePath(e.target.value)}
+        />
+        <button title="刷新目录">
+          <ArrowUpRight size={14} />
+        </button>
+      </form>
+      <button
+        className="parent-folder"
+        onClick={() => void loadFiles(`${filePath}/..`)}
+      >
+        <ArrowLeft size={13} />
+        上一级
+      </button>
+      <div className="file-list">
+        {files.map((file) => (
+          <button
+            className="file-row"
+            key={file.name}
+            disabled={!file.directory}
+            onClick={() =>
+              void loadFiles(`${filePath.replace(/\/$/, "")}/${file.name}`)
+            }
+          >
+            {file.directory ? (
+              <Folder size={14} />
+            ) : (
+              <span className="file-dot" />
+            )}
+            <span>{file.name}</span>
+            <small>
+              {file.directory ? "" : `${Math.ceil(file.size / 1024)} KB`}
+            </small>
+          </button>
+        ))}
+        {!files.length && <p className="muted">目录为空</p>}
+      </div>
+      <p className="file-panel-note">
+        初版提供目录浏览；文件编辑与传输将在后续版本加入。
+      </p>
+    </aside>
+  );
+}
+
 function ServerModal({
   server,
+  servers,
   close,
   save,
   remove,
+  onImport,
 }: {
   server?: Server;
+  servers: Server[];
   close(): void;
   save(input: ServerInput): Promise<void>;
   remove(id: string): Promise<void>;
+  onImport?(): Promise<{ alias: string; reason: string }[]>;
 }) {
   const [value, setValue] = useState<ServerInput>(
     server
@@ -1916,6 +2576,7 @@ function ServerModal({
           group: server.group,
           authType: server.authType,
           privateKeyPath: server.privateKeyPath,
+          jumpServerId: server.jumpServerId,
         }
       : {
           name: "",
@@ -1968,6 +2629,45 @@ function ServerModal({
         </div>
         <h2 id="server-title">{server ? "编辑服务器" : "添加服务器"}</h2>
         <p className="muted">保存连接配置，凭据由系统安全存储加密。</p>
+        {!server && onImport && (
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            style={{
+              marginBottom: 14,
+              width: "100%",
+              justifyContent: "center",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 12px",
+            }}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const skipped = await onImport();
+                if (skipped?.length) {
+                  const listed = skipped
+                    .slice(0, 3)
+                    .map((s) => `${s.alias}（${s.reason}）`)
+                    .join("；");
+                  setError(
+                    `已跳过 ${skipped.length} 个条目：${listed}${
+                      skipped.length > 3 ? "…" : ""
+                    }`,
+                  );
+                }
+              } catch (e) {
+                setError(errorText(e));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <Download size={15} /> 从 ~/.ssh/config 快速导入
+          </button>
+        )}
         <label>
           名称
           <input
@@ -2079,6 +2779,34 @@ function ServerModal({
             />
           </label>
         )}
+        <div className="select-field">
+          <span>跳板机（可选）</span>
+          <SelectMenu
+            label="跳板机"
+            value={value.jumpServerId ?? ""}
+            onChange={(jumpServerId) =>
+              setValue({
+                ...value,
+                jumpServerId: jumpServerId || undefined,
+              })
+            }
+            options={[
+              {
+                value: "",
+                label: "无（直连）",
+                description: "不使用跳板机代理",
+              },
+              ...servers
+                .filter((s) => !server || s.id !== server.id)
+                .map((s) => ({
+                  value: s.id,
+                  label: `${s.name} (${s.username}@${s.host})`,
+                  description: `${s.host}:${s.port}`,
+                  icon: <ServerIcon size={16} />,
+                })),
+            ]}
+          />
+        </div>
         <div className="form-note">
           <ShieldCheck size={15} />
           <span>首次连接需确认主机指纹。不会自动信任变化的密钥。</span>

@@ -39,6 +39,34 @@ export class SSHService {
   private async establish(id: string) {
     const server = this.store.server(id);
     const secret = this.store.secret(id);
+    let jumpStream: ClientChannel | undefined;
+    if (server.jumpServerId) {
+      const visited = new Set<string>([id]);
+      let currentJumpId: string | undefined = server.jumpServerId;
+      while (currentJumpId) {
+        if (visited.has(currentJumpId)) {
+          throw new Error("检测到跳板机循环引用");
+        }
+        visited.add(currentJumpId);
+        const jumpServer = this.store.server(currentJumpId);
+        currentJumpId = jumpServer.jumpServerId;
+      }
+      await this.connect(server.jumpServerId);
+      const jumpClient = this.connection(server.jumpServerId);
+      jumpStream = await new Promise<ClientChannel>((resolve, reject) => {
+        jumpClient.forwardOut(
+          "127.0.0.1",
+          0,
+          server.host,
+          server.port,
+          (err, channel) => {
+            if (err)
+              return reject(new Error(`跳板机端口转发失败: ${err.message}`));
+            resolve(channel);
+          },
+        );
+      });
+    }
     const client = new Client();
     let acceptedFingerprint: string | undefined;
     let verificationError: string | undefined;
@@ -49,6 +77,7 @@ export class SSHService {
       readyTimeout: 20000,
       keepaliveInterval: 15000,
       keepaliveCountMax: 3,
+      sock: jumpStream,
       hostVerifier: (key: Buffer, callback: (valid: boolean) => void) => {
         const fingerprint = `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
         if (server.fingerprint) {
@@ -113,6 +142,7 @@ export class SSHService {
       client.connect(options);
     }).catch((error) => {
       client.destroy();
+      jumpStream?.destroy();
       throw error;
     });
   }

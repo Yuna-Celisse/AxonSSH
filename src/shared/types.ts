@@ -10,6 +10,7 @@ export interface Server {
   privateKeyPath?: string;
   hasSecret: boolean;
   fingerprint?: string;
+  jumpServerId?: string;
 }
 export interface ServerInput extends Omit<
   Server,
@@ -17,6 +18,7 @@ export interface ServerInput extends Omit<
 > {
   id?: string;
   secret?: string;
+  jumpServerId?: string;
 }
 export interface Settings {
   baseUrl: string;
@@ -222,6 +224,24 @@ export interface AxonAPI {
     remove(id: string): Promise<void>;
     connect(id: string): Promise<void>;
     disconnect(id: string): Promise<void>;
+    importOpenSshConfig(): Promise<{
+      imported: Server[];
+      count: number;
+      skipped: { alias: string; reason: string }[];
+    }>;
+    contextMenu(
+      id: string,
+      options?: { isConnected?: boolean },
+    ): Promise<
+      | "connect"
+      | "disconnect"
+      | "open-terminal"
+      | "open-files"
+      | "edit"
+      | "copy-ssh-command"
+      | "delete"
+      | undefined
+    >;
   };
   terminal: {
     open(serverId?: string, sessionId?: string): Promise<string>;

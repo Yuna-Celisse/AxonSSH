@@ -28,6 +28,9 @@ const api: AxonAPI = {
     remove: (id) => ipcRenderer.invoke("servers:remove", id),
     connect: (id) => ipcRenderer.invoke("servers:connect", id),
     disconnect: (id) => ipcRenderer.invoke("servers:disconnect", id),
+    importOpenSshConfig: () => ipcRenderer.invoke("servers:import-ssh-config"),
+    contextMenu: (id, options) =>
+      ipcRenderer.invoke("servers:context-menu", id, options),
   },
   terminal: {
     open: (id, sessionId) => ipcRenderer.invoke("terminal:open", id, sessionId),

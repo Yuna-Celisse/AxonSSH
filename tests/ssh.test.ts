@@ -4,7 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { Store } from "../src/main/store";
 import { SSHService } from "../src/main/ssh";
 const cleanup: (() => void)[] = [];
@@ -26,7 +26,14 @@ async function fixture(confirm: boolean) {
         ? ctx.accept()
         : ctx.reject(),
     );
-    client.on("ready", () =>
+    client.on("ready", () => {
+      client.on("tcpip", (accept, _reject, info) => {
+        const channel = accept();
+        const socket = net.connect(info.destPort, info.destIP);
+        channel.pipe(socket).pipe(channel);
+        socket.on("error", () => channel.end());
+        channel.on("error", () => socket.destroy());
+      });
       client.on("session", (accept) => {
         const session = accept();
         session.on("exec", (accept, _reject, info) => {
@@ -77,8 +84,8 @@ async function fixture(confirm: boolean) {
           });
           sftp.on("CLOSE", (id) => sftp.status(id, 0));
         });
-      }),
-    );
+      });
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   cleanup.push(() => server.close());
@@ -142,5 +149,39 @@ describe("real SSH transport", () => {
     store.pinHost(config.id, "SHA256:wrong");
     await expect(ssh.connect(config.id)).rejects.toThrow("密钥发生变化");
     expect(prompts()).toBe(0);
+  });
+  it("detects jump host cycle reference and rejects", async () => {
+    const { ssh, store, config } = await fixture(true);
+    const server2 = store.saveServer({
+      name: "jump-2",
+      host: "127.0.0.1",
+      port: config.port,
+      username: "tester",
+      group: "test",
+      authType: "password",
+      secret: "password",
+      jumpServerId: config.id,
+    });
+    store.saveServer({
+      ...config,
+      jumpServerId: server2.id,
+    });
+    await expect(ssh.connect(config.id)).rejects.toThrow("跳板机循环引用");
+  });
+  it("connects to target server via jump host forwarding", async () => {
+    const { ssh, store, config } = await fixture(true);
+    const target = store.saveServer({
+      name: "target-behind-jump",
+      host: "127.0.0.1",
+      port: config.port,
+      username: "tester",
+      group: "test",
+      authType: "password",
+      secret: "password",
+      jumpServerId: config.id,
+    });
+    await ssh.connect(target.id);
+    const result = await ssh.execute(target.id, "echo hello");
+    expect(result.stdout).toContain("Executed: echo hello");
   });
 });
