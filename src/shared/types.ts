@@ -121,6 +121,15 @@ export interface Session {
   handoffs?: Handoff[];
   permissions?: PermissionPolicy;
 }
+/**
+ * Session title and project membership are managed from the native Session
+ * menu, so the menu reports the choice and the renderer applies it through
+ * `sessions.update` — the single place that rejects changes while a task runs.
+ */
+export type SessionMenuAction =
+  | { action: "rename" }
+  | { action: "move"; projectId: string | null }
+  | { action: "delete" };
 export interface Project {
   id: string;
   workspaceId: string;
@@ -195,7 +204,10 @@ export interface AxonAPI {
     chooseDirectory(): Promise<string | undefined>;
   };
   sessions: {
-    contextMenu(id: string): Promise<"delete" | undefined>;
+    contextMenu(
+      id: string,
+      options?: { projects: { id: string; name: string }[] },
+    ): Promise<SessionMenuAction | undefined>;
     remove(id: string): Promise<boolean>;
     list(legacyWorkspaceId: string): Promise<Session[]>;
     create(

@@ -1,4 +1,5 @@
 import { test, expect, _electron as electron } from "@playwright/test";
+import type { ElectronApplication, Locator, Page } from "@playwright/test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,6 +7,63 @@ import { createServer } from "node:http";
 import { generateKeyPairSync } from "node:crypto";
 import { Server } from "ssh2";
 import type { AddressInfo } from "node:net";
+
+/**
+ * Session renaming and project membership live in a native menu, which
+ * Playwright cannot reach through the DOM. Swap `popup` inside the main process
+ * so an item can be selected by label path while the real handler still runs.
+ */
+async function stubNativeMenu(application: ElectronApplication) {
+  await application.evaluate(({ Menu }) => {
+    const state = globalThis as any;
+    state.__menuPath = [] as string[];
+    state.__menuClicked = "";
+    const pick = (items: any[], path: string[]): any => {
+      const item = items.find((entry) => entry.label === path[0]);
+      if (!item) return undefined;
+      if (path.length > 1)
+        return pick(item.submenu?.items ?? [], path.slice(1));
+      return item;
+    };
+    Menu.prototype.popup = function (options: any) {
+      const item = pick(this.items as any[], state.__menuPath as string[]);
+      state.__menuClicked = item?.label ?? "";
+      if (item && item.enabled !== false)
+        item.click(undefined as any, undefined as any, undefined as any);
+      options.callback?.();
+    };
+  });
+}
+
+async function clickMenuItem(
+  page: Page,
+  application: ElectronApplication,
+  trigger: Locator,
+  path: string[],
+) {
+  // The first parameter is always the Electron module object; the payload
+  // arrives as the second one.
+  await application.evaluate((_electron, wanted: string[]) => {
+    (globalThis as any).__menuPath = wanted;
+    (globalThis as any).__menuClicked = "";
+  }, path);
+  await trigger.click({ button: "right" });
+  await expect
+    .poll(() => application.evaluate(() => (globalThis as any).__menuClicked))
+    .toBe(path[path.length - 1]);
+}
+
+/**
+ * The welcome screen no longer offers a terminal shortcut, so tests reach the
+ * local terminal the way a user now does: open the right-hand panel, then use
+ * its empty state.
+ */
+async function openLocalTerminal(page: Page) {
+  const panel = page.getByRole("button", { name: "右侧工作区", exact: true });
+  if ((await panel.getAttribute("aria-pressed")) === "false")
+    await panel.click();
+  await page.getByRole("button", { name: "新建本地终端", exact: true }).click();
+}
 
 test("Session context menu cancels or deletes and restores a valid selection", async () => {
   const dir = mkdtempSync(join(tmpdir(), "axon-session-delete-"));
@@ -23,28 +81,36 @@ test("Session context menu cancels or deletes and restores a valid selection", a
     const original = await page
       .locator(".session-row.selected")
       .getAttribute("data-session-id");
-    await application.evaluate(({ Menu, dialog }) => {
+    await stubNativeMenu(application);
+    await application.evaluate(({ dialog }) => {
       (globalThis as any).__deleteResponse = 0;
-      (globalThis as any).__menuLabel = "";
-      Menu.prototype.popup = function (options: any) {
-        (globalThis as any).__menuLabel = this.items[0].label;
-        this.items[0].click(
-          undefined as any,
-          undefined as any,
-          undefined as any,
-        );
-        options.callback?.();
-      };
       dialog.showMessageBox = (async () => ({
         response: (globalThis as any).__deleteResponse,
         checkboxChecked: false,
       })) as typeof dialog.showMessageBox;
     });
-    await page.locator(".session-row.selected").click({ button: "right" });
-    await expect
-      .poll(() => application.evaluate(() => (globalThis as any).__menuLabel))
-      .toBe("删除 Session");
+    await clickMenuItem(
+      page,
+      application,
+      page.locator(".session-row.selected"),
+      ["删除 Session"],
+    );
     await expect(page.locator(".session-row")).toHaveCount(1);
+    await clickMenuItem(
+      page,
+      application,
+      page.locator(".session-row.selected"),
+      ["重命名 Session"],
+    );
+    await page.getByLabel("Session 名称").fill("Renamed session");
+    await page.getByRole("button", { name: "保存名称", exact: true }).click();
+    await expect(page.locator(".session-row.selected")).toContainText(
+      "Renamed session",
+    );
+    await page.reload();
+    await expect(page.locator(".session-row.selected")).toContainText(
+      "Renamed session",
+    );
     await page
       .getByRole("button", { name: "新建 Session", exact: true })
       .click();
@@ -52,9 +118,12 @@ test("Session context menu cancels or deletes and restores a valid selection", a
     await application.evaluate(() => {
       (globalThis as any).__deleteResponse = 1;
     });
-    await page
-      .locator(`[data-session-id="${original}"]`)
-      .click({ button: "right" });
+    await clickMenuItem(
+      page,
+      application,
+      page.locator(`[data-session-id="${original}"]`),
+      ["删除 Session"],
+    );
     await expect(page.locator(`[data-session-id="${original}"]`)).toHaveCount(
       0,
     );
@@ -62,7 +131,12 @@ test("Session context menu cancels or deletes and restores a valid selection", a
     const last = await page
       .locator(".session-row.selected")
       .getAttribute("data-session-id");
-    await page.locator(".session-row.selected").click({ button: "right" });
+    await clickMenuItem(
+      page,
+      application,
+      page.locator(".session-row.selected"),
+      ["删除 Session"],
+    );
     await expect(page.locator(`[data-session-id="${last}"]`)).toHaveCount(0);
     await expect(page.locator(".session-row.selected")).toHaveCount(1);
     await page.reload();
@@ -785,13 +859,15 @@ test("projects organize sessions, choose real directories, set local PTY cwd and
       .locator(".session-row.selected")
       .getAttribute("data-session-id");
     expect(first).not.toBe(original);
+    // Project membership is no longer shown in a selector; the sidebar
+    // grouping is the single source of truth for it.
     await expect(
-      page.getByRole("combobox", { name: "Session 项目", exact: true }),
-    ).toContainText("Development");
+      page.locator(
+        `.project-group[data-project-id="${projectId}"] .session-row[data-session-id="${first}"]`,
+      ),
+    ).toHaveCount(1);
     await page.getByLabel("运维任务").fill("project draft");
-    await page
-      .getByRole("button", { name: "打开本地终端", exact: true })
-      .click();
+    await openLocalTerminal(page);
     const terminalId = await page
       .locator(".terminal-canvas")
       .getAttribute("data-terminal-id");
@@ -840,10 +916,13 @@ test("projects organize sessions, choose real directories, set local PTY cwd and
     await expect(page.getByLabel("运维任务")).toHaveValue("");
     await page.locator(`.session-row[data-session-id="${first}"]`).click();
     await expect(page.getByLabel("运维任务")).toHaveValue("project draft");
-    await page
-      .getByRole("combobox", { name: "Session 项目", exact: true })
-      .click();
-    await page.getByRole("option", { name: "未归类", exact: true }).click();
+    await stubNativeMenu(application);
+    await clickMenuItem(
+      page,
+      application,
+      page.locator(`.session-row[data-session-id="${first}"]`),
+      ["移动到项目", "未归类"],
+    );
     await expect(page.locator(".project-group .session-row")).toHaveCount(1);
     await page
       .getByRole("button", { name: "管理项目：Development", exact: true })

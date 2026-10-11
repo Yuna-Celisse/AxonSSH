@@ -7,7 +7,8 @@ const api: AxonAPI = {
     chooseDirectory: () => ipcRenderer.invoke("projects:choose-directory"),
   },
   sessions: {
-    contextMenu: (id) => ipcRenderer.invoke("sessions:context-menu", id),
+    contextMenu: (id, options) =>
+      ipcRenderer.invoke("sessions:context-menu", id, options),
     remove: (id) => ipcRenderer.invoke("sessions:remove", id),
     list: (workspaceId) => ipcRenderer.invoke("sessions:list", workspaceId),
     create: (workspaceId, serverId, engine, projectId) =>

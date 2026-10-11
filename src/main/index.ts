@@ -27,12 +27,11 @@ import {
   agentSelectionSchema,
   projectSchema,
 } from "../shared/validation";
-import type { AppEvent } from "../shared/types";
+import type { AppEvent, Server, SessionMenuAction } from "../shared/types";
 import { cliArguments } from "./cli";
 import { localDiagnostics } from "./modes";
 import { executeLocal } from "./local-command";
 import { loadDefaultSshConfig, parseOpenSshConfig } from "./ssh-config";
-import type { Server } from "../shared/types";
 
 let window: BrowserWindow | undefined;
 let store: Store,
@@ -142,21 +141,53 @@ function registerIPC() {
   handle("sessions:ensure", (workspaceId) =>
     store.ensureSession(idSchema.parse(workspaceId)),
   );
-  handle("sessions:context-menu", (id) => {
-    const parsedId = idSchema.parse(id);
-    store.session(parsedId);
-    return new Promise<"delete" | undefined>((resolve) => {
-      const menu = Menu.buildFromTemplate([
-        {
-          label: "删除 Session",
-          enabled:
-            !sessionTasks.has(parsedId) && !sessionExecutions.has(parsedId),
-          click: () => resolve("delete"),
-        },
-      ]);
-      menu.popup({ window: window!, callback: () => resolve(undefined) });
-    });
-  });
+  handle(
+    "sessions:context-menu",
+    (id, options?: { projects?: { id: string; name: string }[] }) => {
+      const parsedId = idSchema.parse(id);
+      store.session(parsedId);
+      const projects = (options?.projects ?? [])
+        .filter(
+          (project) =>
+            idSchema.safeParse(project.id).success &&
+            typeof project.name === "string" &&
+            project.name.trim(),
+        )
+        .slice(0, 60);
+      const running =
+        sessionTasks.has(parsedId) || sessionExecutions.has(parsedId);
+      return new Promise<SessionMenuAction | undefined>((resolve) => {
+        const menu = Menu.buildFromTemplate([
+          {
+            label: "重命名 Session",
+            click: () => resolve({ action: "rename" }),
+          },
+          {
+            label: "移动到项目",
+            submenu: [
+              {
+                label: "未归类",
+                enabled: !running,
+                click: () => resolve({ action: "move", projectId: null }),
+              },
+              ...projects.map((project) => ({
+                label: project.name,
+                enabled: !running,
+                click: () => resolve({ action: "move", projectId: project.id }),
+              })),
+            ],
+          },
+          { type: "separator" },
+          {
+            label: "删除 Session",
+            enabled: !running,
+            click: () => resolve({ action: "delete" }),
+          },
+        ]);
+        menu.popup({ window: window!, callback: () => resolve(undefined) });
+      });
+    },
+  );
   handle("sessions:remove", async (id) => {
     const parsedId = idSchema.parse(id);
     const owner = store.session(parsedId);

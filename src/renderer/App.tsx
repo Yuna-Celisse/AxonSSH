@@ -254,6 +254,7 @@ export default function App() {
     x: number;
     y: number;
   } | null>(null);
+  const [renaming, setRenaming] = useState<Session | null>(null);
 
   useEffect(() => {
     if (!showAddMenu) return;
@@ -355,8 +356,25 @@ export default function App() {
   }
   async function sessionContextMenu(target: Session) {
     try {
-      if ((await window.axon.sessions.contextMenu(target.id)) !== "delete")
+      const result = await window.axon.sessions.contextMenu(target.id, {
+        projects: workspaceProjects
+          .filter((p) => !p.archived || p.id === target.projectId)
+          .map((p) => ({ id: p.id, name: p.name })),
+      });
+      if (!result) return;
+      if (result.action === "rename") {
+        setRenaming(target);
         return;
+      }
+      if (result.action === "move") {
+        if ((target.projectId ?? null) === result.projectId) return;
+        mergeSession(
+          await window.axon.sessions.update(target.id, {
+            projectId: result.projectId,
+          }),
+        );
+        return;
+      }
       if (!(await window.axon.sessions.remove(target.id))) return;
       setSessions((current) => current.filter((s) => s.id !== target.id));
       setMessages((current) =>
@@ -373,6 +391,10 @@ export default function App() {
     } catch (e) {
       report(e);
     }
+  }
+  async function renameSession(target: Session, title: string) {
+    mergeSession(await window.axon.sessions.update(target.id, { title }));
+    setRenaming(null);
   }
   useEffect(() => {
     void reloadSessions().catch(report);
@@ -1101,16 +1123,66 @@ export default function App() {
             <strong>
               {modal === "settings"
                 ? "设置与模型"
-                : view === "handoff"
-                  ? "交接记录"
-                  : view === "activity"
-                    ? "执行记录"
-                    : view === "terminal"
-                      ? "终端"
-                      : "智能工作台"}
+                : view === "activity"
+                  ? "执行记录"
+                  : view === "terminal"
+                    ? "终端"
+                    : "智能工作台"}
             </strong>
           </div>
+          {session && modal !== "settings" && (
+            <div className="topbar-session-controls">
+              <SelectMenu
+                label="处理位置"
+                disabled={!!taskId || !!busyCommand}
+                compact
+                value={selected ?? ""}
+                onChange={(value) => setSelected(value || undefined)}
+                options={[
+                  {
+                    value: "",
+                    label: "本机",
+                    description: currentProject?.directory ?? "本机工作环境",
+                  },
+                  ...servers
+                    .filter(
+                      (s) =>
+                        workspace.serverIds.includes(s.id) &&
+                        (!currentProject ||
+                          currentProject.serverIds.includes(s.id)),
+                    )
+                    .map((s) => ({
+                      value: s.id,
+                      label: s.name,
+                      description: `${s.username}@${s.host}:${s.port}`,
+                    })),
+                ]}
+              />
+            </div>
+          )}
           <div className="topbar-right">
+            {session && modal !== "settings" && (
+              <div className="session-navigation">
+                <button
+                  aria-pressed={view !== "activity"}
+                  onClick={() => {
+                    if (view === "activity") setView("workspace");
+                  }}
+                >
+                  <MessageSquare size={14} />
+                  对话
+                </button>
+                <button
+                  aria-label="Session 执行记录"
+                  aria-pressed={view === "activity"}
+                  onClick={showActivity}
+                >
+                  <ActivityIcon size={14} />
+                  执行记录
+                  {activity.length > 0 && <span>{activity.length}</span>}
+                </button>
+              </div>
+            )}
             <div className="view-switch" aria-label="主视图">
               <button
                 aria-label="智能工作台主视图"
@@ -1190,124 +1262,6 @@ export default function App() {
             refreshCli={async () => setCli(await window.axon.agent.detect())}
             launch={launchCli}
           />
-        )}
-        {session && (
-          <div className="session-toolbar" hidden={modal === "settings"}>
-            <div className="session-title">
-              <MessageSquare size={15} />
-              <input
-                key={session.id + session.title}
-                aria-label="Session 名称"
-                defaultValue={session.title}
-                maxLength={100}
-                onBlur={(event) => {
-                  const title = event.target.value.trim();
-                  if (!title) {
-                    event.target.value = session.title;
-                    return;
-                  }
-                  if (title !== session.title)
-                    void window.axon.sessions
-                      .update(session.id, { title })
-                      .then(mergeSession)
-                      .catch(report);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                  if (event.key === "Escape") {
-                    event.currentTarget.value = session.title;
-                    event.currentTarget.blur();
-                  }
-                }}
-              />
-              <Pencil size={12} />
-            </div>
-            <div className="session-project-select">
-              <SelectMenu
-                label="Session 项目"
-                compact
-                value={session.projectId ?? ""}
-                onChange={(projectId) => {
-                  void window.axon.sessions
-                    .update(session.id, { projectId: projectId || null })
-                    .then((next) => {
-                      mergeSession(next);
-                      selectSession(next);
-                    })
-                    .catch(report);
-                }}
-                options={[
-                  { value: "", label: "未归类", description: "不关联项目目录" },
-                  ...workspaceProjects
-                    .filter((p) => !p.archived || p.id === session.projectId)
-                    .map((p) => ({
-                      value: p.id,
-                      label: p.name + (p.archived ? "（已归档）" : ""),
-                      description: `${p.includeLocal ? "本地" : ""}${p.includeLocal && p.serverIds.length ? " + " : ""}${p.serverIds.length ? `${p.serverIds.length} 台服务器` : ""}`,
-                      disabled: p.archived,
-                    })),
-                ]}
-              />
-            </div>
-            {session && (
-              <div className="session-target-select">
-                <SelectMenu
-                  label="处理位置"
-                  disabled={!!taskId || !!busyCommand}
-                  compact
-                  value={selected ?? ""}
-                  onChange={(value) => setSelected(value || undefined)}
-                  options={[
-                    {
-                      value: "",
-                      label: "本机",
-                      description: currentProject?.directory ?? "本机工作环境",
-                    },
-                    ...servers
-                      .filter(
-                        (s) =>
-                          workspace.serverIds.includes(s.id) &&
-                          (!currentProject ||
-                            currentProject.serverIds.includes(s.id)),
-                      )
-                      .map((s) => ({
-                        value: s.id,
-                        label: s.name,
-                        description: `${s.username}@${s.host}:${s.port}`,
-                      })),
-                  ]}
-                />
-              </div>
-            )}
-            <div className="session-navigation">
-              <button
-                aria-pressed={view !== "activity" && view !== "handoff"}
-                onClick={() => {
-                  if (view === "activity" || view === "handoff")
-                    setView("workspace");
-                }}
-              >
-                <MessageSquare size={14} />
-                对话
-              </button>
-              <button
-                aria-label="Session 交接记录"
-                aria-pressed={view === "handoff"}
-                onClick={() => setView("handoff")}
-              >
-                <ArrowRightLeft size={14} />
-                交接记录
-              </button>
-              <button
-                aria-label="Session 执行记录"
-                aria-pressed={view === "activity"}
-                onClick={showActivity}
-              >
-                <ActivityIcon size={14} />
-                执行记录{activity.length > 0 && <span>{activity.length}</span>}
-              </button>
-            </div>
-          </div>
         )}
         {view === "activity" && (
           <div className="activity-view" hidden={modal === "settings"}>
@@ -2335,6 +2289,20 @@ export default function App() {
           </div>
         </div>
       )}
+      {renaming && (
+        <SessionRenameModal
+          session={renaming}
+          close={() => setRenaming(null)}
+          save={async (title) => {
+            try {
+              await renameSession(renaming, title);
+            } catch (e) {
+              report(e);
+              throw e;
+            }
+          }}
+        />
+      )}
       {modal === "project" && (
         <ProjectModal
           project={editingProject}
@@ -2550,6 +2518,102 @@ function FilePanel({
   );
 }
 
+function SessionRenameModal({
+  session,
+  close,
+  save,
+}: {
+  session: Session;
+  close(): void;
+  save(title: string): Promise<void>;
+}) {
+  const [value, setValue] = useState(session.title);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const title = value.trim();
+    if (!title) {
+      setError("名称不能为空");
+      return;
+    }
+    setBusy(true);
+    try {
+      await save(title);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="modal-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) close();
+      }}
+    >
+      <form
+        className="modal"
+        onSubmit={submit}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-session-title"
+      >
+        <div className="modal-head">
+          <div className="modal-icon">
+            <MessageSquare size={20} />
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="关闭"
+            onClick={close}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <h2 id="rename-session-title">重命名 Session</h2>
+        <p className="muted">
+          名称只用于本地列表，不影响对话、交接与执行记录。
+        </p>
+        <label>
+          Session 名称
+          <input
+            autoFocus
+            required
+            maxLength={100}
+            aria-label="Session 名称"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") close();
+            }}
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-footer">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={close}
+            disabled={busy}
+          >
+            取消
+          </button>
+          <button className="primary-button" disabled={busy}>
+            {busy ? (
+              <LoaderCircle size={14} className="spin" />
+            ) : (
+              <Check size={14} />
+            )}
+            保存名称
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
 function ServerModal({
   server,
   servers,
