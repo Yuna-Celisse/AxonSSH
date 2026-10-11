@@ -561,19 +561,6 @@ textarea::placeholder {
   flex-direction: column;
   padding: 0 34px;
 }
-.welcome {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  padding: 38px 0 24px;
-}
-.welcome > * {
-  flex-shrink: 0;
-}
 .section-eyebrow {
   font-size: 9px;
   letter-spacing: 2.1px;
@@ -582,41 +569,6 @@ textarea::placeholder {
   align-items: center;
   gap: 7px;
   font-weight: 500;
-}
-.tiny-line {
-  width: 13px;
-  height: 1px;
-  background: var(--button-bg);
-}
-.welcome-symbol {
-  margin-top: 27px;
-  width: 58px;
-  height: 58px;
-  border: 1px solid var(--accent-border);
-  border-radius: 17px;
-  background: linear-gradient(145deg, var(--accent-bg), var(--bg-raised));
-  color: var(--accent-text);
-  display: grid;
-  place-items: center;
-  box-shadow: 0 8px 25px var(--shadow-soft);
-}
-.welcome h1 {
-  font-size: 31px;
-  font-weight: 500;
-  letter-spacing: -0.9px;
-  margin: 22px 0 12px;
-  color: var(--text-primary);
-}
-.welcome-description {
-  font-size: 12px;
-  line-height: 1.9;
-  color: var(--text-secondary);
-  margin: 0;
-}
-.welcome-buttons {
-  display: flex;
-  gap: 10px;
-  margin-top: 22px;
 }
 .primary-button {
   background: var(--button-bg);
@@ -634,59 +586,6 @@ textarea::placeholder {
   padding: 9px 13px;
   color: var(--text-primary);
   font-size: 12px;
-}
-.suggestion-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  width: 100%;
-  max-width: 680px;
-  margin-top: 34px;
-}
-.suggestion-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  text-align: left;
-  padding: 17px 15px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: linear-gradient(145deg, var(--bg-raised), var(--bg-surface));
-  gap: 10px;
-  transition:
-    background 0.2s,
-    border-color 0.2s;
-}
-.suggestion-card:hover {
-  border-color: var(--accent-border);
-  background: var(--bg-raised);
-}
-.suggestion-card > svg:first-child {
-  color: var(--text-secondary);
-}
-.suggestion-card strong {
-  font-size: 12px;
-  font-weight: 500;
-  margin-top: 4px;
-}
-.suggestion-card small {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-.suggestion-card > svg:last-child {
-  position: absolute;
-  right: 13px;
-  top: 17px;
-  color: var(--text-muted);
-}
-.welcome-footnote {
-  font-size: 10px;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 21px;
 }
 .composer {
   width: 100%;
@@ -1362,24 +1261,6 @@ textarea::placeholder {
   }
 }
 @media (max-height: 850px) {
-  .welcome {
-    padding-top: 22px;
-  }
-  .welcome-symbol {
-    margin-top: 18px;
-    width: 49px;
-    height: 49px;
-  }
-  .welcome h1 {
-    font-size: 27px;
-    margin-top: 16px;
-  }
-  .suggestion-grid {
-    margin-top: 22px;
-  }
-  .welcome-footnote {
-    margin-top: 15px;
-  }
   .terminal-section {
     height: 205px;
   }
@@ -1391,17 +1272,11 @@ textarea::placeholder {
   .conversation {
     padding: 0 25px;
   }
-  .suggestion-card {
-    padding: 13px 11px;
-  }
   .server-toolbar > div > span:not(.badge) {
     max-width: 120px;
   }
   .file-panel {
     width: 205px;
-  }
-  .suggestion-card small {
-    font-size: 9px;
   }
   .send-hint {
     display: none;
@@ -1923,28 +1798,6 @@ textarea::placeholder {
 }
 .agent-panel-heading button {
   margin-left: auto;
-}
-.view-terminal .welcome {
-  padding-top: 22px;
-}
-.view-terminal .welcome h1 {
-  font-size: 23px;
-}
-.view-terminal .welcome-buttons {
-  flex-wrap: wrap;
-  justify-content: center;
-}
-.view-terminal .suggestion-grid {
-  grid-template-columns: 1fr;
-  gap: 8px;
-  margin-top: 20px;
-}
-.view-terminal .suggestion-card {
-  gap: 6px;
-  padding: 12px;
-}
-.view-terminal .suggestion-card > svg:first-child {
-  display: none;
 }
 .view-terminal .composer-toolbar > div {
   gap: 5px;

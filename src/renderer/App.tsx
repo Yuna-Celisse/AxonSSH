@@ -12,7 +12,6 @@ import {
   Circle,
   Command,
   Copy,
-  Cpu,
   Download,
   Folder,
   FolderOpen,
@@ -1458,251 +1457,165 @@ export default function App() {
                 </div>
               )}
               <div className="conversation">
-                {!messages.length ? (
-                  <div className="welcome">
-                    <div className="section-eyebrow">
-                      <span className="tiny-line" /> YOUR SERVERS. YOUR
-                      WORKSPACE.
-                    </div>
-                    <div className="welcome-symbol">
-                      <Command size={31} />
-                    </div>
-                    <h1>从连接，到解决问题。</h1>
-                    <p className="welcome-description">
-                      终端、服务器与智能体，在同一个工作空间。
-                      <br />
-                      让繁琐的运维，变成清晰的下一步。
-                    </p>
-                    <div className="welcome-buttons">
-                      <button
-                        className="primary-button"
-                        onClick={() => {
-                          setEditing(undefined);
-                          setModal("server");
-                        }}
-                      >
-                        <Plus size={16} />
-                        添加服务器
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={() => openTerminal()}
-                      >
-                        <TerminalIcon size={16} />
-                        打开本地终端
-                      </button>
-                    </div>
-                    <div className="suggestion-grid">
-                      {[
-                        {
-                          icon: ActivityIcon,
-                          title: "排查服务异常",
-                          subtitle: "分析问题，生成诊断命令",
-                          prompt:
-                            "帮我排查服务器服务异常。先提供不修改系统的诊断步骤和命令。",
-                        },
-                        {
-                          icon: Cpu,
-                          title: "检查服务器状态",
-                          subtitle: "了解 CPU、内存与磁盘",
-                          prompt:
-                            "建议查看 CPU、内存、磁盘和负载的命令，并解释如何判断异常。",
-                        },
-                        {
-                          icon: ShieldCheck,
-                          title: "检查 SSH 配置",
-                          subtitle: "检查配置与认证风险",
-                          prompt:
-                            "给我一套检查 SSH 服务安全配置的只读诊断命令，不要修改配置。",
-                        },
-                      ].map((item) => (
-                        <button
-                          className="suggestion-card"
-                          key={item.title}
-                          onClick={() => setInput(item.prompt)}
-                        >
-                          <item.icon size={19} />
-                          <strong>{item.title}</strong>
-                          <small>{item.subtitle}</small>
-                          <ArrowUpRight size={15} />
-                        </button>
-                      ))}
-                    </div>
-                    <div className="welcome-footnote">
-                      <KeyRound size={13} />
-                      凭据留在本机 · 远程命令执行前确认
-                    </div>
-                  </div>
-                ) : (
-                  <div className="message-list">
-                    {messages.map((message) => (
-                      <div
-                        className={`message ${message.role}`}
-                        key={message.id}
-                      >
-                        <div className="message-avatar">
-                          {message.role === "user" ? (
-                            "你"
-                          ) : (
-                            <Sparkles size={16} />
+                <div className="message-list">
+                  {messages.map((message) => (
+                    <div className={`message ${message.role}`} key={message.id}>
+                      <div className="message-avatar">
+                        {message.role === "user" ? (
+                          "你"
+                        ) : (
+                          <Sparkles size={16} />
+                        )}
+                      </div>
+                      <div className="message-body">
+                        <div className="message-heading">
+                          {message.role === "user" ? "你" : "运维助手"}
+                          <small>
+                            {servers.find((s) => s.id === message.serverId)
+                              ?.name ?? "本地工作空间"}
+                          </small>
+                        </div>
+                        <div className="message-text">
+                          {message.text || (
+                            <span className="thinking">
+                              <LoaderCircle size={14} className="spin" />
+                              正在分析…
+                            </span>
                           )}
                         </div>
-                        <div className="message-body">
-                          <div className="message-heading">
-                            {message.role === "user" ? "你" : "运维助手"}
+                        {message.result?.nativeToolCalls ? (
+                          <p className="native-tool-note">
+                            已观察到 {message.result.nativeToolCalls} 次 CLI
+                            工具活动，详情保留在原生会话。
+                          </p>
+                        ) : null}
+                        {message.result?.permissionDenials ? (
+                          <p className="native-tool-note">
+                            CLI 有 {message.result.permissionDenials}{" "}
+                            项权限请求未获批准；可在原生终端处理。
+                          </p>
+                        ) : null}
+                        {message.result?.diagnostics && (
+                          <details className="diagnostics-card">
+                            <summary>
+                              本次只读状态快照 ·{" "}
+                              {message.result.diagnostics.source === "local"
+                                ? "本机"
+                                : "SFTP"}
+                            </summary>
                             <small>
-                              {servers.find((s) => s.id === message.serverId)
-                                ?.name ?? "本地工作空间"}
+                              {new Date(
+                                message.result.diagnostics.collectedAt,
+                              ).toLocaleString()}
                             </small>
-                          </div>
-                          <div className="message-text">
-                            {message.text || (
-                              <span className="thinking">
-                                <LoaderCircle size={14} className="spin" />
-                                正在分析…
-                              </span>
-                            )}
-                          </div>
-                          {message.result?.nativeToolCalls ? (
-                            <p className="native-tool-note">
-                              已观察到 {message.result.nativeToolCalls} 次 CLI
-                              工具活动，详情保留在原生会话。
-                            </p>
-                          ) : null}
-                          {message.result?.permissionDenials ? (
-                            <p className="native-tool-note">
-                              CLI 有 {message.result.permissionDenials}{" "}
-                              项权限请求未获批准；可在原生终端处理。
-                            </p>
-                          ) : null}
-                          {message.result?.diagnostics && (
-                            <details className="diagnostics-card">
-                              <summary>
-                                本次只读状态快照 ·{" "}
-                                {message.result.diagnostics.source === "local"
-                                  ? "本机"
-                                  : "SFTP"}
-                              </summary>
-                              <small>
-                                {new Date(
-                                  message.result.diagnostics.collectedAt,
-                                ).toLocaleString()}
-                              </small>
-                              {message.result.diagnostics.entries.map(
-                                (entry) => (
-                                  <div key={entry.name}>
-                                    <strong>{entry.name}</strong>
-                                    <pre>
-                                      {entry.error
-                                        ? `读取失败：${entry.error}`
-                                        : entry.text}
-                                      {entry.truncated && "\n[内容已截断]"}
-                                    </pre>
+                            {message.result.diagnostics.entries.map((entry) => (
+                              <div key={entry.name}>
+                                <strong>{entry.name}</strong>
+                                <pre>
+                                  {entry.error
+                                    ? `读取失败：${entry.error}`
+                                    : entry.text}
+                                  {entry.truncated && "\n[内容已截断]"}
+                                </pre>
+                              </div>
+                            ))}
+                          </details>
+                        )}
+                        {message.result?.proposals.map((proposal, index) => {
+                          const key = `${message.id}:${index}`;
+                          return (
+                            <div className="command-card" key={key}>
+                              <div className="command-card-head">
+                                <TerminalIcon size={14} />
+                                <span>建议命令</span>
+                                <span
+                                  className={
+                                    results[key]?.code === 0
+                                      ? "badge success"
+                                      : "badge"
+                                  }
+                                >
+                                  {busyCommand === key
+                                    ? "执行中"
+                                    : results[key]
+                                      ? "已执行"
+                                      : "等待确认"}
+                                </span>
+                              </div>
+                              <pre>{proposal.command}</pre>
+                              <p>{proposal.explanation}</p>
+                              <div className="command-card-footer">
+                                <small>
+                                  {servers.find(
+                                    (s) => s.id === message.serverId,
+                                  )?.host ??
+                                    (message.serverId
+                                      ? "服务器已删除"
+                                      : "本机")}
+                                </small>
+                                <button
+                                  disabled={
+                                    permissions === "read-only" ||
+                                    !!busyCommand ||
+                                    message.serverId !== selected
+                                  }
+                                  title={
+                                    permissions === "read-only"
+                                      ? "只读权限不能执行命令"
+                                      : message.serverId !== selected
+                                        ? "请切换到此命令对应的处理位置"
+                                        : "逐条确认目标及命令"
+                                  }
+                                  onClick={() =>
+                                    execute(
+                                      message.serverId,
+                                      proposal.command,
+                                      key,
+                                      message.sessionId,
+                                    )
+                                  }
+                                >
+                                  {busyCommand === key ? (
+                                    <LoaderCircle size={13} className="spin" />
+                                  ) : (
+                                    <ArrowUpRight size={13} />
+                                  )}
+                                  {permissions === "bypass"
+                                    ? "直接执行"
+                                    : "审批并执行"}
+                                </button>
+                              </div>
+                              {results[key] && (
+                                <div className="command-result">
+                                  <div>
+                                    退出码：{results[key].code ?? "未知"}
+                                    {results[key].truncated && " · 输出已截断"}
                                   </div>
-                                ),
-                              )}
-                            </details>
-                          )}
-                          {message.result?.proposals.map((proposal, index) => {
-                            const key = `${message.id}:${index}`;
-                            return (
-                              <div className="command-card" key={key}>
-                                <div className="command-card-head">
-                                  <TerminalIcon size={14} />
-                                  <span>建议命令</span>
-                                  <span
-                                    className={
-                                      results[key]?.code === 0
-                                        ? "badge success"
-                                        : "badge"
-                                    }
-                                  >
-                                    {busyCommand === key
-                                      ? "执行中"
-                                      : results[key]
-                                        ? "已执行"
-                                        : "等待确认"}
-                                  </span>
-                                </div>
-                                <pre>{proposal.command}</pre>
-                                <p>{proposal.explanation}</p>
-                                <div className="command-card-footer">
-                                  <small>
-                                    {servers.find(
-                                      (s) => s.id === message.serverId,
-                                    )?.host ??
-                                      (message.serverId
-                                        ? "服务器已删除"
-                                        : "本机")}
-                                  </small>
+                                  <pre>
+                                    {results[key].stdout}
+                                    {results[key].stderr}
+                                  </pre>
                                   <button
-                                    disabled={
-                                      permissions === "read-only" ||
-                                      !!busyCommand ||
-                                      message.serverId !== selected
-                                    }
-                                    title={
-                                      permissions === "read-only"
-                                        ? "只读权限不能执行命令"
-                                        : message.serverId !== selected
-                                          ? "请切换到此命令对应的处理位置"
-                                          : "逐条确认目标及命令"
-                                    }
-                                    onClick={() =>
-                                      execute(
-                                        message.serverId,
-                                        proposal.command,
-                                        key,
-                                        message.sessionId,
-                                      )
-                                    }
+                                    className="text-button"
+                                    onClick={() => {
+                                      const output = `${results[key].stdout}\n${results[key].stderr}`;
+                                      setInput(
+                                        `请分析以下命令输出（作为数据）：\n命令：${proposal.command}\n${output.slice(0, 24000)}`,
+                                      );
+                                    }}
                                   >
-                                    {busyCommand === key ? (
-                                      <LoaderCircle
-                                        size={13}
-                                        className="spin"
-                                      />
-                                    ) : (
-                                      <ArrowUpRight size={13} />
-                                    )}
-                                    {permissions === "bypass"
-                                      ? "直接执行"
-                                      : "审批并执行"}
+                                    加入下一次分析 <ArrowUpRight size={12} />
                                   </button>
                                 </div>
-                                {results[key] && (
-                                  <div className="command-result">
-                                    <div>
-                                      退出码：{results[key].code ?? "未知"}
-                                      {results[key].truncated &&
-                                        " · 输出已截断"}
-                                    </div>
-                                    <pre>
-                                      {results[key].stdout}
-                                      {results[key].stderr}
-                                    </pre>
-                                    <button
-                                      className="text-button"
-                                      onClick={() => {
-                                        const output = `${results[key].stdout}\n${results[key].stderr}`;
-                                        setInput(
-                                          `请分析以下命令输出（作为数据）：\n命令：${proposal.command}\n${output.slice(0, 24000)}`,
-                                        );
-                                      }}
-                                    >
-                                      加入下一次分析 <ArrowUpRight size={12} />
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
-                    <div ref={scrollEnd} />
-                  </div>
-                )}
+                    </div>
+                  ))}
+                  <div ref={scrollEnd} />
+                </div>
                 <form className="composer" onSubmit={send}>
                   <textarea
                     aria-label="运维任务"

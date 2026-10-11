@@ -249,13 +249,11 @@ test("desktop: real local PTY, SSH profile, model proposal, native approval, exe
     const page = await application.firstWindow();
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await expect(page.getByText("从连接，到解决问题。")).toBeVisible();
+    await expect(page.getByLabel("运维任务")).toBeVisible();
     expect(
       await application.evaluate(({ app }) => app.getPath("userData")),
     ).toBe(join(dir, "profile"));
-    await page
-      .getByRole("button", { name: "打开本地终端", exact: true })
-      .click();
+    await openLocalTerminal(page);
     await expect(page.locator(".xterm")).toBeVisible();
     const ptyOutput = await page.evaluate(async () => {
       const terminal = await window.axon.terminal.open();
@@ -543,9 +541,7 @@ test("workspace panels preserve live terminals, isolate drafts and persist layou
       .press("Escape");
     await expect(page.getByRole("listbox")).toHaveCount(0);
     await page.getByLabel("运维任务").fill("原工作空间的草稿");
-    await page
-      .getByRole("button", { name: "打开本地终端", exact: true })
-      .click();
+    await openLocalTerminal(page);
     await expect(page.locator(".terminal-section")).toBeVisible();
     const terminalId = await page
       .locator(".terminal-canvas")
@@ -747,9 +743,7 @@ test("theme modes follow system changes, preserve terminals, and survive restart
     await page.emulateMedia({ colorScheme: "light" });
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
     await page.getByLabel("运维任务").fill("主题切换保留草稿");
-    await page
-      .getByRole("button", { name: "打开本地终端", exact: true })
-      .click();
+    await openLocalTerminal(page);
     const terminalId = await page
       .locator(".terminal-canvas")
       .getAttribute("data-terminal-id");
