@@ -2068,67 +2068,6 @@ textarea::placeholder {
 .view-terminal .model-selection-hint {
   display: none;
 }
-.handoff-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.handoff-card {
-  margin-top: 18px;
-  padding: 16px;
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  background: var(--bg-raised);
-}
-.handoff-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-.handoff-card-header strong {
-  font-size: 12px;
-  font-weight: 500;
-}
-.handoff-metadata {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  font-size: 10px;
-  color: var(--text-muted);
-  margin: 12px 0;
-}
-.native-session-id {
-  display: block;
-  font-size: 10px;
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-}
-.handoff-warning {
-  font-size: 11px;
-  line-height: 1.7;
-  color: var(--warning-text);
-}
-.handoff-card details {
-  margin-top: 15px;
-}
-.handoff-card summary {
-  font-size: 11px;
-  color: var(--accent-text);
-  cursor: pointer;
-}
-.handoff-card pre {
-  font-size: 11px;
-  line-height: 1.7;
-  padding: 12px;
-  max-height: 350px;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--bg-base);
-  border-radius: 6px;
-}
 .settings-page {
   display: flex;
   flex-direction: column;

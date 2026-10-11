@@ -4,9 +4,12 @@ const workspaceSchema = z.object({
   id: z.string().min(1),
   name: z.string().trim().min(1).max(60),
   serverIds: z.array(z.string()).default([]),
-  view: z
-    .enum(["workspace", "terminal", "activity", "handoff"])
-    .default("workspace"),
+  // `loadWorkspaces` resets everything when this schema rejects a stored value,
+  // so the retired `handoff` view is coerced rather than rejected.
+  view: z.preprocess(
+    (value) => (value === "handoff" ? "workspace" : value),
+    z.enum(["workspace", "terminal", "activity"]).default("workspace"),
+  ),
   terminalOpen: z.boolean().default(false),
   agentOpen: z.boolean().default(false),
   selected: z.string().optional(),

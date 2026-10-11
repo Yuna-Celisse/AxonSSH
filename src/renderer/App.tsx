@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   ArrowUp,
   ArrowUpRight,
-  ArrowRightLeft,
   Bot,
   Check,
   ChevronDown,
@@ -56,7 +55,6 @@ import WorkspaceSwitcher from "./WorkspaceSwitcher";
 import SelectMenu from "./SelectMenu";
 import ThemeSettings from "./ThemeSettings";
 import AgentOptionsPicker from "./AgentOptionsPicker";
-import HandoffPanel from "./HandoffPanel";
 import ProjectSidebar from "./ProjectSidebar";
 import ProjectModal from "./ProjectModal";
 import { forgetTerminal, startTerminalHub } from "./terminalHub";
@@ -73,7 +71,7 @@ type Tab = {
   id: string;
   title: string;
   workspaceId: string;
-  type?: "terminal" | "files" | "activity" | "handoff";
+  type?: "terminal" | "files" | "activity";
   serverId?: string;
   closed?: boolean;
 };
@@ -328,7 +326,7 @@ export default function App() {
       activeSessionId: next.id,
       selected: next.serverId,
       engine: next.engine,
-      view: view === "activity" || view === "handoff" ? "workspace" : view,
+      view: view === "activity" ? "workspace" : view,
     });
     setError("");
   }
@@ -677,25 +675,6 @@ export default function App() {
           id,
           title: "执行记录",
           type: "activity",
-          workspaceId: workspace.id,
-        },
-      ]);
-      setActiveTab(id);
-    }
-    updateWorkspace({ terminalOpen: true });
-  }
-  function openHandoffTab() {
-    const existing = workspaceTabs.find((t) => t.type === "handoff");
-    if (existing) {
-      setActiveTab(existing.id);
-    } else {
-      const id = `handoff-${Date.now()}`;
-      setTabs((current) => [
-        ...current,
-        {
-          id,
-          title: "交接记录",
-          type: "handoff",
           workspaceId: workspace.id,
         },
       ]);
@@ -1313,24 +1292,6 @@ export default function App() {
             )}
           </div>
         )}
-        {view === "handoff" && session && modal !== "settings" && (
-          <HandoffPanel
-            session={session}
-            engine={engine}
-            busy={!!taskId}
-            reset={() => {
-              void window.axon.agent
-                .resetNative(
-                  session.id,
-                  engine,
-                  selected,
-                  session.agentOptions?.[engine]?.model,
-                )
-                .then(mergeSession)
-                .catch(report);
-            }}
-          />
-        )}
         <div
           className={`workspace-layout view-${view} dock-right ${terminalOpen ? "terminal-open" : ""} ${agentOpen ? "agent-open" : ""} ${showFiles ? "files-open" : ""}`}
           style={
@@ -1338,9 +1299,7 @@ export default function App() {
               ? { gridTemplateColumns: `minmax(0, 1fr) ${rightPanelWidth}px` }
               : undefined
           }
-          hidden={
-            view === "activity" || view === "handoff" || modal === "settings"
-          }
+          hidden={view === "activity" || modal === "settings"}
         >
           {hasRightPanel && (
             <div
@@ -1776,8 +1735,6 @@ export default function App() {
                             <FolderOpen size={13} />
                           ) : tab.type === "activity" ? (
                             <ActivityIcon size={13} />
-                          ) : tab.type === "handoff" ? (
-                            <ArrowRightLeft size={13} />
                           ) : (
                             <TerminalIcon size={13} />
                           )}
@@ -1854,15 +1811,6 @@ export default function App() {
                         <ActivityIcon size={14} />
                         <span>执行记录</span>
                       </button>
-                      <button
-                        onClick={() => {
-                          setShowAddMenu(false);
-                          openHandoffTab();
-                        }}
-                      >
-                        <ArrowRightLeft size={14} />
-                        <span>交接记录</span>
-                      </button>
                     </div>
                   )}
                 </div>
@@ -1923,7 +1871,6 @@ export default function App() {
                       active={
                         tab.id === activeTab &&
                         view !== "activity" &&
-                        view !== "handoff" &&
                         modal !== "settings" &&
                         (view === "terminal" || terminalOpen)
                       }
@@ -1980,27 +1927,6 @@ export default function App() {
                         ))}
                       </div>
                     )}
-                  </div>
-                )}
-
-                {currentActiveTab?.type === "handoff" && session && (
-                  <div className="handoff-view inside-tab">
-                    <HandoffPanel
-                      session={session}
-                      engine={engine}
-                      busy={!!taskId}
-                      reset={() => {
-                        void window.axon.agent
-                          .resetNative(
-                            session.id,
-                            engine,
-                            selected,
-                            session.agentOptions?.[engine]?.model,
-                          )
-                          .then(mergeSession)
-                          .catch(report);
-                      }}
-                    />
                   </div>
                 )}
 
